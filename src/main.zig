@@ -32,7 +32,7 @@ const board_cols = 20;
 const tile_width_px = 160;
 const tile_height_px = 160;
 const glyph_size = 30;
-const tick_rate_sec = 0.15;
+const tick_rate_sec = 0.10;
 
 const Worker = struct {
     const State = enum {
@@ -93,16 +93,8 @@ const EntityManager = struct {
         return entity_id;
     }
 
-    pub fn remove(entity_man: *EntityManager, entity_id: usize) void {
+    pub inline fn remove(entity_man: *EntityManager, entity_id: usize) void {
         entity_man.free_entities.appendAssumeCapacity(entity_id);
-        // entity_man.component_masks[entity_id].setRangeValue(
-        //     .{
-        //         .start = 0,
-        //         .end = @intFromEnum(ComponentKind.count),
-        //     },
-        //     false,
-        // );
-        // entity_man.living_entity_count -= 1;
     }
 
     pub inline fn hasComponent(
@@ -263,6 +255,7 @@ fn screenSpaceBoardHeight() f32 {
 pub fn main() !void {
     rl.InitWindow(1600, 1200, "terry-cool");
     rl.SetWindowState(rl.FLAG_WINDOW_RESIZABLE);
+    rl.InitAudioDevice();
     const rl_font = rl.GetFontDefault();
 
     ////////////////////////////////////
@@ -394,6 +387,9 @@ pub fn main() !void {
         .y = 0.0,
     };
 
+    const track1 = rl.LoadMusicStream("assets/music/track_1.wav");
+    rl.PlayMusicStream(track1);
+
     var game_time_minute: usize = 0;
     var game_time_hour: usize = 7;
     var game_time_day: usize = 0;
@@ -406,6 +402,7 @@ pub fn main() !void {
     var last_tick_time: f64 = 0;
 
     while (!rl.WindowShouldClose()) {
+        rl.UpdateMusicStream(track1);
         var key_pressed = rl.GetKeyPressed();
         while (key_pressed != 0) {
             if (key_pressed == rl.KEY_UP) {
@@ -452,7 +449,7 @@ pub fn main() !void {
                     }
 
                     if ((pile_list.items.len > 0 and worker.rock_count >= worker_rock_carry_cap) or
-                        (pile_list.items.len > 0 and worker.rock_count > 0 and rocks_on_board))
+                        (pile_list.items.len > 0 and worker.rock_count > 0 and !rocks_on_board))
                     {
                         var closest_pile_d: f32 = math.floatMax(f32);
                         for (pile_list.items) |pile| {
@@ -740,11 +737,17 @@ pub fn main() !void {
                 "Rock count: {d}",
                 .{worker.rock_count},
             );
+            const entity_countz = try fmt.allocPrintZ(
+                scratch_ally,
+                "Entity count: {d}",
+                .{entity_man.free_entities.capacity - entity_man.free_entities.items.len},
+            );
             for (&[_][:0]const u8{
                 game_timez,
                 worker_namez,
                 worker_statez,
                 worker_rock_countz,
+                entity_countz,
             }, 0..) |strz, strz_index| {
                 rl.DrawTextEx(rl_font, strz, .{
                     .x = 0, //@as(f32, @floatFromInt(board_cols)) * tile_width_px,
