@@ -32,34 +32,40 @@ const board_cols = 20;
 const tile_width_px = 160;
 const tile_height_px = 160;
 const glyph_size = 30;
-const tick_rate_sec = 0.10;
+const tick_rate_sec = 0.15;
 
-const Worker = struct {
-    const State = enum {
-        pathing_to_target,
-        choose_new_target,
-        idle,
-    };
+const ComponentKind = enum(u8) {
+    tile_p = 0,
+    resource_kind,
+    inventory,
+    worker_state,
 
-    rock_count: usize,
-    target_tile_p: rl.Vector2,
-    tile_p: rl.Vector2,
-    state: State,
+    count, // NOTHING BELOW THIS LINE
 };
 
-const Storage = struct {
+const Worker = struct {
+    target_tile_p: rl.Vector2,
+};
+
+const WorkerState = enum(u8) {
+    pathing_to_target,
+    choose_new_target,
+    idle,
+};
+
+const Inventory = packed struct {
     rock_count: usize,
-    tile_p: rl.Vector2,
 };
 
 const ResourceKind = enum(usize) {
     rock,
 };
 
+const component_count = @intFromEnum(ComponentKind.count);
+
 const EntityManager = struct {
     free_entities: ArrayList(usize),
-    component_masks: []StaticBitSet(@intFromEnum(ComponentKind.count)),
-    // living_entity_count: usize,
+    signatures: []StaticBitSet(component_count),
 
     pub fn init(
         ally: mem.Allocator,
@@ -67,12 +73,11 @@ const EntityManager = struct {
     ) !EntityManager {
         var result = EntityManager{
             .free_entities = try ArrayList(usize).initCapacity(ally, entity_count), // TODO(caleb): SinglyLinkedList
-            .component_masks = try ally.alloc(StaticBitSet(@intFromEnum(ComponentKind.count)), entity_count),
-            // .living_entity_count = 0,
+            .signatures = try ally.alloc(StaticBitSet(component_count), entity_count),
         };
         for (0..entity_count) |free_entity_index|
             result.free_entities.insertAssumeCapacity(free_entity_index, free_entity_index);
-        for (result.component_masks) |*mask|
+        for (result.signatures) |*mask|
             mask.setRangeValue(
                 .{
                     .start = 0,
@@ -86,14 +91,23 @@ const EntityManager = struct {
     pub fn newEntity(entity_man: *EntityManager) usize {
         assert(entity_man.free_entities.items.len > 0);
         const entity_id = entity_man.free_entities.pop();
-        entity_man.component_masks[entity_id].setRangeValue(
+        entity_man.signatures[entity_id].setRangeValue(
             .{ .start = 0, .end = @intFromEnum(ComponentKind.count) },
             false,
         );
         return entity_id;
     }
 
-    pub inline fn remove(entity_man: *EntityManager, entity_id: usize) void {
+    pub inline fn componentMaskSet(
+        entity_man: *EntityManager,
+        entity_id: usize,
+        kind: ComponentKind,
+    ) void {
+        entity_man.signatures[entity_id]
+            .set(@intFromEnum(kind));
+    }
+
+    pub inline fn release(entity_man: *EntityManager, entity_id: usize) void {
         entity_man.free_entities.appendAssumeCapacity(entity_id);
     }
 
@@ -102,7 +116,7 @@ const EntityManager = struct {
         entity_id: usize,
         component_kind: ComponentKind,
     ) bool {
-        return entity_man.component_masks[entity_id].isSet(@intFromEnum(component_kind));
+        return entity_man.signatures[entity_id].isSet(@intFromEnum(component_kind));
     }
 };
 
@@ -123,15 +137,31 @@ fn ComponentArray(comptime T: type) type {
             ally: mem.Allocator,
             entity_count: usize,
         ) !@This() {
-            return @This(){
+            var result = @This(){
                 .data = try ally.alloc(T, entity_count),
                 .data_count = 0,
                 .entity_to_data = AutoHashMap(usize, usize).init(ally),
                 .data_to_entity = AutoHashMap(usize, usize).init(ally),
             };
+            try result.entity_to_data.ensureTotalCapacity(@intCast(entity_count));
+            try result.data_to_entity.ensureTotalCapacity(@intCast(entity_count));
+            return result;
         }
 
-        pub fn removeComponent(
+        pub fn add(component_array: *@This(), entity_id: usize, item: T) void {
+            component_array.data[component_array.data_count] = item;
+            component_array.data_to_entity.putAssumeCapacity(
+                component_array.data_count,
+                entity_id,
+            );
+            component_array.entity_to_data.putAssumeCapacity(
+                entity_id,
+                component_array.data_count,
+            );
+            component_array.data_count += 1;
+        }
+
+        pub fn remove(
             component_array: *@This(),
             entity_id: usize,
         ) void {
@@ -150,21 +180,10 @@ fn ComponentArray(comptime T: type) type {
     };
 }
 
-const ComponentKind = enum(u8) {
-    tile_p = 0,
-    resource_kind,
-
-    count, // NOTHING BELOW THIS LINE
-};
-
 // const Tile = struct {
 //     const Kind = enum {
 //         grass,
 //     };
-
-//     entities: [10]usize = undefined,
-//     entity_count: u8,
-//     kind: Kind,
 // };
 
 const SWPEntry = struct {
@@ -253,17 +272,20 @@ fn screenSpaceBoardHeight() f32 {
 }
 
 pub fn main() !void {
+    ////////////////////////////////////
+    // raylib init
     rl.InitWindow(1600, 1200, "terry-cool");
     rl.SetWindowState(rl.FLAG_WINDOW_RESIZABLE);
     rl.InitAudioDevice();
     const rl_font = rl.GetFontDefault();
 
     ////////////////////////////////////
+    // Allocator setup
     var scratch_mem = heap.page_allocator.alloc(u8, 1024 * 10) catch unreachable;
     var scratch_fba = heap.FixedBufferAllocator.init(scratch_mem);
     var scratch_arena = heap.ArenaAllocator.init(scratch_fba.allocator());
 
-    var entity_mem = heap.page_allocator.alloc(u8, 1024 * 20) catch unreachable;
+    var entity_mem = heap.page_allocator.alloc(u8, 1024 * 30) catch unreachable;
     var entity_fba = heap.FixedBufferAllocator.init(entity_mem);
     var entity_arena = heap.ArenaAllocator.init(entity_fba.allocator());
 
@@ -281,11 +303,44 @@ pub fn main() !void {
         max_entity_count,
     );
 
+    var target_tile_p_components =
+        try ComponentArray(rl.Vector2).init(
+        entity_arena.allocator(),
+        max_entity_count,
+    );
+
     var resource_kind_components =
         try ComponentArray(ResourceKind).init(
         entity_arena.allocator(),
         max_entity_count,
     );
+
+    var inventory_components =
+        try ComponentArray(Inventory).init(
+        entity_arena.allocator(),
+        max_entity_count,
+    );
+
+    var worker_state_components =
+        try ComponentArray(WorkerState).init(
+        entity_arena.allocator(),
+        max_entity_count,
+    );
+
+    // Entity signatures
+
+    var worker_entity_sig = StaticBitSet(component_count).initEmpty();
+    worker_entity_sig.set(@intFromEnum(ComponentKind.worker_state));
+    worker_entity_sig.set(@intFromEnum(ComponentKind.tile_p));
+    worker_entity_sig.set(@intFromEnum(ComponentKind.inventory));
+
+    var pile_entity_sig = StaticBitSet(component_count).initEmpty();
+    pile_entity_sig.set(@intFromEnum(ComponentKind.inventory));
+    pile_entity_sig.set(@intFromEnum(ComponentKind.tile_p));
+
+    var resource_entity_sig = StaticBitSet(component_count).initEmpty();
+    resource_entity_sig.set(@intFromEnum(ComponentKind.resource_kind));
+    resource_entity_sig.set(@intFromEnum(ComponentKind.tile_p));
 
     ////////////////////////////////////
     // NOTE(caleb): Dirty board *gen* code
@@ -295,97 +350,45 @@ pub fn main() !void {
     // var board: [board_rows * board_cols]Tile = undefined;
     for (0..board_rows) |board_row_index| {
         for (0..board_cols) |board_col_index| {
-            // Initialize tile
-            // var tile = &board[board_row_index * board_cols + board_col_index];
-            // tile.kind = .grass;
-            // tile.entity_count = 0;
-
             // 1 in 10 to gen a rock
             if (rl.GetRandomValue(0, 10) == 0) {
-                const rock_entity_index = entity_man.newEntity();
-
-                // Component masks position and resource
-                entity_man.component_masks[rock_entity_index]
-                    .set(@intFromEnum(ComponentKind.tile_p));
-                entity_man.component_masks[rock_entity_index]
-                    .set(@intFromEnum(ComponentKind.resource_kind));
-
-                // Tile p component
-                tile_p_components.data[tile_p_components.data_count] =
-                    rl.Vector2{
+                const rock_entity_id = entity_man.newEntity();
+                tile_p_components.add(rock_entity_id, .{
                     .x = @floatFromInt(board_col_index),
                     .y = @floatFromInt(board_row_index),
-                };
-                try tile_p_components.data_to_entity.put(
-                    tile_p_components.data_count,
-                    rock_entity_index,
-                );
-                try tile_p_components.entity_to_data.put(
-                    rock_entity_index,
-                    tile_p_components.data_count,
-                );
-                tile_p_components.data_count += 1;
-
-                // Resource component
-                resource_kind_components.data[resource_kind_components.data_count] = .rock;
-                try resource_kind_components.data_to_entity.put(
-                    resource_kind_components.data_count,
-                    rock_entity_index,
-                );
-                try resource_kind_components.entity_to_data.put(
-                    rock_entity_index,
-                    resource_kind_components.data_count,
-                );
-                resource_kind_components.data_count += 1;
-
-                // assert(tile.entity_count + 1 < tile.entities.len);
-                // tile.entities[tile.entity_count] = rock_entity_index;
-                // tile.entity_count += 1;
+                });
+                resource_kind_components.add(rock_entity_id, .rock);
+                entity_man.signatures[rock_entity_id] = resource_entity_sig;
+            } else if (rl.GetRandomValue(0, 30) == 0) { // 1 in 30 for a pile
+                const pile_entity_id = entity_man.newEntity();
+                inventory_components.add(pile_entity_id, .{ .rock_count = 0 });
+                tile_p_components.add(pile_entity_id, .{
+                    .x = @floatFromInt(board_col_index),
+                    .y = @floatFromInt(board_row_index),
+                });
+                entity_man.signatures[pile_entity_id] = pile_entity_sig;
             }
         }
     }
 
+    { // Worker entity
+        const worker_entity_id = entity_man.newEntity();
+        worker_state_components.add(worker_entity_id, .choose_new_target);
+        tile_p_components.add(worker_entity_id, .{
+            .x = @floatFromInt(board_rows / 2),
+            .y = @floatFromInt(board_cols / 2),
+        });
+        target_tile_p_components.add(worker_entity_id, .{ .x = 0.0, .y = 0.0 });
+        inventory_components.add(worker_entity_id, .{ .rock_count = 0 });
+        entity_man.signatures[worker_entity_id] = worker_entity_sig;
+    }
+
+    const worker_rock_carry_cap = 3;
+    var selected_tile_tile_p = rl.Vector2{ .x = 0.0, .y = 0.0 };
+
     var sample_walk_map: [board_rows * board_cols]usize = undefined;
     for (&sample_walk_map) |*distance|
         distance.* = math.maxInt(usize);
-
-    // NOTE(caleb): Obvious approach TODO(caleb): Replace with ecs
-
-    var pile_list = try ArrayList(Storage).initCapacity(
-        entity_arena.allocator(),
-        100,
-    );
-    pile_list.appendAssumeCapacity(.{
-        .rock_count = 0,
-        .tile_p = .{
-            .x = 11.0,
-            .y = 10.0,
-        },
-    });
-
-    pile_list.appendAssumeCapacity(.{
-        .rock_count = 0,
-        .tile_p = .{
-            .x = 11.0,
-            .y = 0.0,
-        },
-    });
-
-    var worker = Worker{
-        .target_tile_p = undefined,
-        .state = .choose_new_target,
-        .tile_p = rl.Vector2{
-            .x = @floatFromInt(board_cols / 2),
-            .y = @floatFromInt(board_rows / 2),
-        },
-        .rock_count = 0,
-    };
-    const worker_rock_carry_cap = 3;
-
-    var selected_tile_tile_p = rl.Vector2{
-        .x = 0.0,
-        .y = 0.0,
-    };
 
     const track1 = rl.LoadMusicStream("assets/music/track_1.wav");
     rl.PlayMusicStream(track1);
@@ -427,115 +430,160 @@ pub fn main() !void {
         }
 
         if (!is_paused and rl.GetTime() - last_tick_time >= tick_rate_sec) {
-            switch (worker.state) {
-                .choose_new_target => {
-                    // NOTE(caleb): I think the worker should know what it is doing...
-                    // For now just have specific behaviors for the current tile.
-                    if (worker.rock_count > 0) {
-                        for (pile_list.items) |*pile| {
-                            if (rl.Vector2Equals(worker.tile_p, pile.tile_p) != 0) {
-                                pile.rock_count += worker.rock_count;
-                                worker.rock_count = 0;
-                            }
-                        }
-                    }
-
-                    var rocks_on_board = false;
-                    for (0..resource_kind_components.data_count) |resource_kind_component_index| {
-                        if (resource_kind_components.data[resource_kind_component_index] == .rock) {
-                            rocks_on_board = true;
-                            break;
-                        }
-                    }
-
-                    if ((pile_list.items.len > 0 and worker.rock_count >= worker_rock_carry_cap) or
-                        (pile_list.items.len > 0 and worker.rock_count > 0 and !rocks_on_board))
-                    {
-                        var closest_pile_d: f32 = math.floatMax(f32);
-                        for (pile_list.items) |pile| {
-                            if (rl.Vector2Distance(worker.tile_p, pile.tile_p) < closest_pile_d) {
-                                closest_pile_d = rl.Vector2Distance(worker.tile_p, pile.tile_p);
-                                worker.target_tile_p = pile.tile_p;
-                            }
-                        }
-                        worker.state = .pathing_to_target;
-                    } else if (rocks_on_board and
-                        (worker.rock_count < worker_rock_carry_cap))
-                    {
-                        var closest_rock_d: f32 = math.floatMax(f32);
-                        for (0..resource_kind_components.data_count) |rk_component_index| {
-                            if (resource_kind_components.data[rk_component_index] == .rock) {
-                                const entity_id = resource_kind_components.data_to_entity
-                                    .get(rk_component_index) orelse unreachable;
-                                const tile_p_index = tile_p_components.entity_to_data
-                                    .get(entity_id) orelse unreachable;
-                                const tile_p = tile_p_components.data[tile_p_index];
-
-                                if (rl.Vector2Distance(worker.tile_p, tile_p) < closest_rock_d) {
-                                    closest_rock_d = rl.Vector2Distance(worker.tile_p, tile_p);
-                                    worker.target_tile_p = tile_p;
+            for (0..worker_state_components.data_count) |wsc_index| {
+                const worker_state = worker_state_components.data[wsc_index];
+                const worker_entity_id = worker_state_components.data_to_entity
+                    .get(wsc_index) orelse unreachable;
+                const worker_tile_p_index = tile_p_components.entity_to_data
+                    .get(worker_entity_id) orelse unreachable;
+                const worker_target_tile_p_index = target_tile_p_components.entity_to_data
+                    .get(worker_entity_id) orelse unreachable;
+                const worker_inventory_index = inventory_components.entity_to_data
+                    .get(worker_entity_id) orelse unreachable;
+                switch (worker_state) {
+                    .choose_new_target => {
+                        // NOTE(caleb): I think the worker should know what it is doing...
+                        // For now just have specific behaviors for the current tile.
+                        if (inventory_components.data[worker_inventory_index].rock_count > 0) {
+                            for (0..inventory_components.data_count) |ic_index| {
+                                const entity_id = inventory_components.data_to_entity
+                                    .get(ic_index) orelse unreachable;
+                                if (entity_man.signatures[entity_id].eql(pile_entity_sig)) { // Filter for piles
+                                    const storage_tile_p_index = tile_p_components.entity_to_data
+                                        .get(entity_id) orelse unreachable;
+                                    if (rl.Vector2Equals(
+                                        tile_p_components.data[worker_tile_p_index],
+                                        tile_p_components.data[storage_tile_p_index],
+                                    ) != 0) {
+                                        inventory_components.data[ic_index].rock_count +=
+                                            inventory_components.data[worker_inventory_index].rock_count;
+                                        inventory_components.data[worker_inventory_index].rock_count = 0;
+                                    }
                                 }
                             }
                         }
-                        worker.state = .pathing_to_target;
-                    } else worker.state = .idle;
-                },
-                .pathing_to_target => {
-                    try swpUpdateMap(
-                        &scratch_arena,
-                        &sample_walk_map,
-                        worker.target_tile_p,
-                    );
 
-                    // Have worker navigate to rock
-                    var next_worker_tile_p: rl.Vector2 = undefined;
-                    var closest_tile_distance: usize = math.maxInt(usize);
-                    for (&[_]rl.Vector2{
-                        rl.Vector2{ .x = 0.0, .y = -1.0 },
-                        rl.Vector2{ .x = 0.0, .y = 1.0 },
-                        rl.Vector2{ .x = 1.0, .y = 0.0 },
-                        rl.Vector2{ .x = -1.0, .y = 0.0 },
-                    }) |d_tile_coords| {
-                        const neighbor_tile_p = rl.Vector2Add(worker.tile_p, d_tile_coords);
-                        if (!(neighbor_tile_p.y >= board_rows or
-                            neighbor_tile_p.y < 0 or
-                            neighbor_tile_p.x >= board_cols or
-                            neighbor_tile_p.x < 0))
-                        {
-                            if (sample_walk_map[@intFromFloat(neighbor_tile_p.y * board_cols + neighbor_tile_p.x)] < closest_tile_distance) {
-                                closest_tile_distance = sample_walk_map[@intFromFloat(neighbor_tile_p.y * board_cols + neighbor_tile_p.x)];
-                                next_worker_tile_p = neighbor_tile_p;
-                            }
-                        }
-                    }
-                    worker.tile_p = next_worker_tile_p;
-                    if (rl.Vector2Equals(worker.tile_p, worker.target_tile_p) != 0) {
-                        for (0..tile_p_components.data_count) |tp_component_index| {
-                            if ((rl.Vector2Equals(
-                                worker.tile_p,
-                                tile_p_components.data[tp_component_index],
-                            ) != 0)) {
-                                // Remove rock entity
-                                const entity_id = tile_p_components.data_to_entity
-                                    .get(tp_component_index) orelse unreachable;
-
-                                assert(entity_man.hasComponent(entity_id, .resource_kind));
-                                resource_kind_components.removeComponent(entity_id);
-
-                                assert(entity_man.hasComponent(entity_id, .tile_p));
-                                tile_p_components.removeComponent(entity_id);
-
-                                entity_man.remove(entity_id);
-
-                                worker.rock_count += 1;
-
+                        var rocks_on_board = false;
+                        for (0..resource_kind_components.data_count) |rkc_index| {
+                            if (resource_kind_components.data[rkc_index] == .rock) {
+                                rocks_on_board = true;
                                 break;
                             }
                         }
-                        worker.state = .choose_new_target;
-                    }
-                },
-                .idle => {},
+
+                        var piles_on_board = false;
+                        for (0..inventory_components.data_count) |ic_index| {
+                            const entity_id = inventory_components.data_to_entity
+                                .get(ic_index) orelse unreachable;
+                            if (entity_man.signatures[entity_id].eql(pile_entity_sig)) {
+                                piles_on_board = true;
+                                break;
+                            }
+                        }
+
+                        if ((piles_on_board and inventory_components.data[worker_inventory_index].rock_count >= worker_rock_carry_cap) or
+                            (piles_on_board and inventory_components.data[worker_inventory_index].rock_count > 0 and !rocks_on_board))
+                        {
+                            var closest_pile_d: f32 = math.floatMax(f32);
+                            for (0..inventory_components.data_count) |ic_index| {
+                                const entity_id = inventory_components.data_to_entity
+                                    .get(ic_index) orelse unreachable;
+                                if (entity_man.signatures[entity_id].eql(pile_entity_sig)) { // Filter for piles
+                                    const storage_tile_p_index =
+                                        tile_p_components.entity_to_data.get(entity_id) orelse unreachable;
+                                    const storage_tile_p = tile_p_components.data[storage_tile_p_index];
+                                    if (rl.Vector2Distance(tile_p_components.data[worker_tile_p_index], storage_tile_p) < closest_pile_d) {
+                                        closest_pile_d = rl.Vector2Distance(tile_p_components.data[worker_tile_p_index], storage_tile_p);
+                                        target_tile_p_components.data[worker_target_tile_p_index] = storage_tile_p;
+                                    }
+                                }
+                            }
+                            worker_state_components.data[wsc_index] = .pathing_to_target;
+                        } else if (rocks_on_board and
+                            (inventory_components.data[worker_inventory_index].rock_count < worker_rock_carry_cap))
+                        {
+                            var closest_rock_d: f32 = math.floatMax(f32);
+                            for (0..resource_kind_components.data_count) |rk_component_index| {
+                                if (resource_kind_components.data[rk_component_index] == .rock) {
+                                    const entity_id = resource_kind_components.data_to_entity
+                                        .get(rk_component_index) orelse unreachable;
+                                    const tile_p_index = tile_p_components.entity_to_data
+                                        .get(entity_id) orelse unreachable;
+                                    const tile_p = tile_p_components.data[tile_p_index];
+
+                                    if (rl.Vector2Distance(tile_p_components.data[worker_tile_p_index], tile_p) < closest_rock_d) {
+                                        closest_rock_d = rl.Vector2Distance(
+                                            tile_p_components.data[worker_tile_p_index],
+                                            tile_p,
+                                        );
+                                        target_tile_p_components.data[worker_target_tile_p_index] = tile_p;
+                                    }
+                                }
+                            }
+                            worker_state_components.data[wsc_index] = .pathing_to_target;
+                        } else worker_state_components.data[wsc_index] = .idle;
+                    },
+                    .pathing_to_target => {
+                        try swpUpdateMap(
+                            &scratch_arena,
+                            &sample_walk_map,
+                            target_tile_p_components.data[worker_target_tile_p_index],
+                        );
+
+                        // Have worker navigate to rock
+                        var next_worker_tile_p: rl.Vector2 = undefined;
+                        var closest_tile_distance: usize = math.maxInt(usize);
+                        for (&[_]rl.Vector2{
+                            rl.Vector2{ .x = 0.0, .y = -1.0 },
+                            rl.Vector2{ .x = 0.0, .y = 1.0 },
+                            rl.Vector2{ .x = 1.0, .y = 0.0 },
+                            rl.Vector2{ .x = -1.0, .y = 0.0 },
+                        }) |d_tile_coords| {
+                            const neighbor_tile_p = rl.Vector2Add(tile_p_components.data[worker_tile_p_index], d_tile_coords);
+                            if (!(neighbor_tile_p.y >= board_rows or
+                                neighbor_tile_p.y < 0 or
+                                neighbor_tile_p.x >= board_cols or
+                                neighbor_tile_p.x < 0))
+                            {
+                                if (sample_walk_map[@intFromFloat(neighbor_tile_p.y * board_cols + neighbor_tile_p.x)] < closest_tile_distance) {
+                                    closest_tile_distance = sample_walk_map[@intFromFloat(neighbor_tile_p.y * board_cols + neighbor_tile_p.x)];
+                                    next_worker_tile_p = neighbor_tile_p;
+                                }
+                            }
+                        }
+                        tile_p_components.data[worker_tile_p_index] = next_worker_tile_p;
+                        if (rl.Vector2Equals(
+                            tile_p_components.data[worker_tile_p_index],
+                            target_tile_p_components.data[worker_target_tile_p_index],
+                        ) != 0) {
+                            for (0..tile_p_components.data_count) |tp_component_index| {
+                                if ((rl.Vector2Equals(
+                                    tile_p_components.data[worker_tile_p_index],
+                                    tile_p_components.data[tp_component_index],
+                                ) != 0)) {
+                                    // Remove rock entity
+                                    const entity_id = tile_p_components.data_to_entity
+                                        .get(tp_component_index) orelse unreachable;
+
+                                    // Is this actually a rock??
+                                    if (entity_man.hasComponent(entity_id, .resource_kind)) {
+                                        resource_kind_components.remove(entity_id);
+
+                                        assert(entity_man.hasComponent(entity_id, .tile_p));
+                                        tile_p_components.remove(entity_id);
+
+                                        entity_man.release(entity_id);
+                                        inventory_components.data[worker_inventory_index].rock_count += 1;
+
+                                        break;
+                                    }
+                                }
+                            }
+                            worker_state_components.data[wsc_index] = .choose_new_target;
+                        }
+                    },
+                    .idle => {},
+                }
             }
 
             game_time_minute += 1;
@@ -549,12 +597,11 @@ pub fn main() !void {
             }
 
             // How should sleep be handled??
-
-            if (game_time_hour < 7 or game_time_hour >= 23) {
-                worker.state = .idle;
-            } else if (worker.state == .idle) { // NOTE(caleb): worker should go back to what it was doing.
-                worker.state = .choose_new_target;
-            }
+            // if (game_time_hour < 7 or game_time_hour >= 23) {
+            //     worker.state = .idle;
+            // } else if (worker.state == .idle) { // NOTE(caleb): worker should go back to what it was doing.
+            //     worker.state = .choose_new_target;
+            // }
 
             last_tick_time = rl.GetTime();
         }
@@ -590,6 +637,16 @@ pub fn main() !void {
 
         // Draw distance map
         if (debug_draw_distance_map) {
+            const a_worker_id =
+                worker_state_components.data_to_entity.get(0) orelse unreachable;
+            const worker_target_tile_p_index = tile_p_components.entity_to_data
+                .get(a_worker_id) orelse unreachable;
+            try swpUpdateMap(
+                &scratch_arena,
+                &sample_walk_map,
+                target_tile_p_components.data[worker_target_tile_p_index],
+            );
+
             for (0..board_rows) |grid_row_index| {
                 for (0..board_cols) |grid_col_index| {
                     const tile_distance = if (sample_walk_map[grid_row_index * board_cols + grid_col_index] > 9)
@@ -613,92 +670,57 @@ pub fn main() !void {
                         @intCast(tile_distance + '0'),
                         projected_p,
                         glyph_size,
-                        if (is_selected_tile) .{ .r = 255, .g = 255, .b = 255, .a = 200 } else .{ .r = 200, .g = 200, .b = 200, .a = 100 },
+                        if (is_selected_tile) .{
+                            .r = 255,
+                            .g = 255,
+                            .b = 255,
+                            .a = 200,
+                        } else .{
+                            .r = 200,
+                            .g = 200,
+                            .b = 200,
+                            .a = 100,
+                        },
                     );
                 }
             }
         }
 
-        // Draw rocks
-        for (0..resource_kind_components.data_count) |rk_component_index| {
-            if (resource_kind_components.data[rk_component_index] == .rock) {
-                const entity_id = resource_kind_components.data_to_entity
-                    .get(rk_component_index) orelse unreachable;
-                const tile_p_index = tile_p_components.entity_to_data
-                    .get(entity_id) orelse unreachable;
-
-                const rock_tile_p = tile_p_components.data[tile_p_index];
-                const is_selected_tile = rl.Vector2Equals(rock_tile_p, selected_tile_tile_p) != 0;
-                const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
-                var projected_p = isoProjGlyph(.{
-                    .x = rock_tile_p.x,
-                    .y = rock_tile_p.y,
-                });
-                projected_p.y += y_offset;
-                rl.DrawTextCodepoint(
-                    rl_font,
-                    @intCast('R'),
-                    projected_p,
-                    glyph_size,
-                    if (is_selected_tile) rl.WHITE else .{ .r = 200, .g = 200, .b = 200, .a = 255 },
-                );
-            }
-        }
-        // for (rock_tile_p_list.items) |rock_tile_p| {
-        // }
-
-        // for (0..board_rows) |board_row_index| {
-        //     for (0..board_cols) |board_col_index| {
-        //         // const tile = &board[board_row_index * board_cols + board_col_index];
-        //         if (tile.entity_count > 0) {
-        //             // TODO(caleb): Which entites have higher draw presidence.
-        //             switch (tile.entities[0].kind) {
-        //                 .resource => {
-        //                     const is_selected_tile = rl.Vector2Equals(rock_tile_p, selected_tile_tile_p) != 0;
-        //                     const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
-        //                     var projected_p = isoProjGlyph(.{
-        //                         .x = rock_tile_p.x,
-        //                         .y = rock_tile_p.y,
-        //                     });
-        //                     projected_p.y += y_offset;
-        //                     rl.DrawTextCodepoint(
-        //                         rl_font,
-        //                         @intCast('R'),
-        //                         projected_p,
-        //                         glyph_size,
-        //                         if (is_selected_tile) rl.WHITE else .{ .r = 200, .g = 200, .b = 200, .a = 255 },
-        //                     );
-        //                 },
-        //             }
-        //         }
-        //     }
-        // }
-
-        // Draw piles
-        for (pile_list.items) |pile| {
-            const is_selected_tile = rl.Vector2Equals(pile.tile_p, selected_tile_tile_p) != 0;
+        // Draw entities w/ tile p component NOTE(caleb): This breaks draw order
+        for (0..tile_p_components.data_count) |tpc_index| {
+            const is_selected_tile = rl.Vector2Equals(tile_p_components.data[tpc_index], selected_tile_tile_p) != 0;
             const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
-            var projected_p = isoProjGlyph(.{
-                .x = pile.tile_p.x,
-                .y = pile.tile_p.y,
-            });
+            var projected_p = isoProjGlyph(tile_p_components.data[tpc_index]);
             projected_p.y += y_offset;
-            rl.DrawTextCodepoint(
-                rl_font,
-                @intCast('P'),
-                projected_p,
-                glyph_size,
-                if (is_selected_tile) rl.YELLOW else .{ .r = 200, .g = 200, .b = 0, .a = 255 },
-            );
+
+            const entity_id = tile_p_components.data_to_entity.get(tpc_index) orelse unreachable;
+            if (entity_man.hasComponent(entity_id, .inventory) and !entity_man.hasComponent(entity_id, .worker_state)) {
+                rl.DrawTextCodepoint(rl_font, @intCast('P'), projected_p, glyph_size, if (is_selected_tile) rl.YELLOW else .{
+                    .r = 200,
+                    .g = 200,
+                    .b = 0,
+                    .a = 255,
+                });
+            } else if (entity_man.hasComponent(entity_id, .resource_kind)) {
+                rl.DrawTextCodepoint(rl_font, @intCast('R'), projected_p, glyph_size, if (is_selected_tile) rl.WHITE else .{
+                    .r = 200,
+                    .g = 200,
+                    .b = 200,
+                    .a = 255,
+                });
+            } else if (entity_man.hasComponent(entity_id, .worker_state)) {} // Drawn seperately
+            else unreachable;
         }
 
-        // Draw worker
-        {
-            const y_offset: f32 = if (rl.Vector2Equals(worker.tile_p, selected_tile_tile_p) != 0) -10.0 else 0.0;
-            var projected_p = isoProjGlyph(.{
-                .x = worker.tile_p.x,
-                .y = worker.tile_p.y,
-            });
+        // HACK(caleb): draw workers seperately.
+        for (0..worker_state_components.data_count) |wsc_index| {
+            const worker_entity_id =
+                worker_state_components.data_to_entity.get(wsc_index) orelse unreachable;
+            const worker_tile_p_index =
+                tile_p_components.entity_to_data.get(worker_entity_id) orelse unreachable;
+            const is_selected_tile = rl.Vector2Equals(tile_p_components.data[worker_tile_p_index], selected_tile_tile_p) != 0;
+            const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
+            var projected_p = isoProjGlyph(tile_p_components.data[worker_tile_p_index]);
             projected_p.y += y_offset;
             rl.DrawTextCodepoint(rl_font, @intCast('W'), projected_p, glyph_size, rl.ORANGE);
         }
@@ -722,31 +744,19 @@ pub fn main() !void {
                 "Time: {d}::{d}::{d}",
                 .{ game_time_day, game_time_hour, game_time_minute },
             );
-            const worker_namez = try fmt.allocPrintZ(
-                scratch_ally,
-                "Worker: Leroy",
-                .{},
-            );
-            const worker_statez = try fmt.allocPrintZ(
-                scratch_ally,
-                "State: {s}",
-                .{@tagName(worker.state)},
-            );
-            const worker_rock_countz = try fmt.allocPrintZ(
-                scratch_ally,
-                "Rock count: {d}",
-                .{worker.rock_count},
-            );
             const entity_countz = try fmt.allocPrintZ(
                 scratch_ally,
                 "Entity count: {d}",
                 .{entity_man.free_entities.capacity - entity_man.free_entities.items.len},
             );
+            const resource_countz = try fmt.allocPrintZ(
+                scratch_ally,
+                "Resource count: {d}",
+                .{resource_kind_components.data_count},
+            );
             for (&[_][:0]const u8{
                 game_timez,
-                worker_namez,
-                worker_statez,
-                worker_rock_countz,
+                resource_countz,
                 entity_countz,
             }, 0..) |strz, strz_index| {
                 rl.DrawTextEx(rl_font, strz, .{
