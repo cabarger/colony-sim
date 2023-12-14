@@ -43,10 +43,6 @@ const ComponentKind = enum(u8) {
     count, // NOTHING BELOW THIS LINE
 };
 
-const Worker = struct {
-    target_tile_p: rl.Vector2,
-};
-
 const WorkerState = enum(u8) {
     pathing_to_target,
     choose_new_target,
@@ -54,11 +50,15 @@ const WorkerState = enum(u8) {
 };
 
 const Inventory = packed struct {
-    rock_count: usize,
+    rock_count: u16 = 0,
+    stick_count: u16 = 0,
+    berry_count: u16 = 0,
 };
 
 const ResourceKind = enum(usize) {
     rock,
+    stick,
+    berry,
 };
 
 const component_count = @intFromEnum(ComponentKind.count);
@@ -180,12 +180,6 @@ fn ComponentArray(comptime T: type) type {
     };
 }
 
-// const Tile = struct {
-//     const Kind = enum {
-//         grass,
-//     };
-// };
-
 const SWPEntry = struct {
     distance: usize,
     tile_p: rl.Vector2,
@@ -271,6 +265,14 @@ fn screenSpaceBoardHeight() f32 {
     return matrixVector2Multiply(iso_proj_mat, .{ .x = board_cols, .y = board_rows }).y + tile_height_px / 2.0;
 }
 
+inline fn sumOfInventory(ica: *ComponentArray(Inventory), ica_index: usize) usize {
+    var result: usize = 0;
+    result += ica.data[ica_index].rock_count;
+    result += ica.data[ica_index].stick_count;
+    result += ica.data[ica_index].berry_count;
+    return result;
+}
+
 pub fn main() !void {
     ////////////////////////////////////
     // raylib init
@@ -285,13 +287,13 @@ pub fn main() !void {
     var scratch_fba = heap.FixedBufferAllocator.init(scratch_mem);
     var scratch_arena = heap.ArenaAllocator.init(scratch_fba.allocator());
 
-    var entity_mem = heap.page_allocator.alloc(u8, 1024 * 30) catch unreachable;
+    var entity_mem = heap.page_allocator.alloc(u8, 1024 * 100) catch unreachable;
     var entity_fba = heap.FixedBufferAllocator.init(entity_mem);
     var entity_arena = heap.ArenaAllocator.init(entity_fba.allocator());
 
     ////////////////////////////////////
     // ECS stuff
-    const max_entity_count = 100;
+    const max_entity_count = 200;
     var entity_man = try EntityManager.init(
         entity_arena.allocator(),
         max_entity_count,
@@ -359,9 +361,25 @@ pub fn main() !void {
                 });
                 resource_kind_components.add(rock_entity_id, .rock);
                 entity_man.signatures[rock_entity_id] = resource_entity_sig;
-            } else if (rl.GetRandomValue(0, 30) == 0) { // 1 in 30 for a pile
+            } else if (rl.GetRandomValue(0, 10) == 0) { // 1 in 10 for a stick
+                const stick_entity_id = entity_man.newEntity();
+                tile_p_components.add(stick_entity_id, .{
+                    .x = @floatFromInt(board_col_index),
+                    .y = @floatFromInt(board_row_index),
+                });
+                resource_kind_components.add(stick_entity_id, .stick);
+                entity_man.signatures[stick_entity_id] = resource_entity_sig;
+            } else if (rl.GetRandomValue(0, 10) == 0) { // 1 in 10 for a berry
+                const berry_entity_id = entity_man.newEntity();
+                tile_p_components.add(berry_entity_id, .{
+                    .x = @floatFromInt(board_col_index),
+                    .y = @floatFromInt(board_row_index),
+                });
+                resource_kind_components.add(berry_entity_id, .berry);
+                entity_man.signatures[berry_entity_id] = resource_entity_sig;
+            } else if (rl.GetRandomValue(0, 200) == 0) { // 1 in 200 for a pile
                 const pile_entity_id = entity_man.newEntity();
-                inventory_components.add(pile_entity_id, .{ .rock_count = 0 });
+                inventory_components.add(pile_entity_id, .{});
                 tile_p_components.add(pile_entity_id, .{
                     .x = @floatFromInt(board_col_index),
                     .y = @floatFromInt(board_row_index),
@@ -371,19 +389,19 @@ pub fn main() !void {
         }
     }
 
-    { // Worker entity
+    for (0..3) |_| { // Worker entity
         const worker_entity_id = entity_man.newEntity();
         worker_state_components.add(worker_entity_id, .choose_new_target);
         tile_p_components.add(worker_entity_id, .{
-            .x = @floatFromInt(board_rows / 2),
-            .y = @floatFromInt(board_cols / 2),
+            .x = @floatFromInt(board_cols / 2),
+            .y = @floatFromInt(board_rows / 2),
         });
         target_tile_p_components.add(worker_entity_id, .{ .x = 0.0, .y = 0.0 });
-        inventory_components.add(worker_entity_id, .{ .rock_count = 0 });
+        inventory_components.add(worker_entity_id, .{});
         entity_man.signatures[worker_entity_id] = worker_entity_sig;
     }
 
-    const worker_rock_carry_cap = 3;
+    const worker_carry_cap = 3;
     var selected_tile_tile_p = rl.Vector2{ .x = 0.0, .y = 0.0 };
 
     var sample_walk_map: [board_rows * board_cols]usize = undefined;
@@ -444,7 +462,7 @@ pub fn main() !void {
                     .choose_new_target => {
                         // NOTE(caleb): I think the worker should know what it is doing...
                         // For now just have specific behaviors for the current tile.
-                        if (inventory_components.data[worker_inventory_index].rock_count > 0) {
+                        if (sumOfInventory(&inventory_components, worker_inventory_index) > 0) {
                             for (0..inventory_components.data_count) |ic_index| {
                                 const entity_id = inventory_components.data_to_entity
                                     .get(ic_index) orelse unreachable;
@@ -457,20 +475,18 @@ pub fn main() !void {
                                     ) != 0) {
                                         inventory_components.data[ic_index].rock_count +=
                                             inventory_components.data[worker_inventory_index].rock_count;
-                                        inventory_components.data[worker_inventory_index].rock_count = 0;
+                                        inventory_components.data[ic_index].stick_count +=
+                                            inventory_components.data[worker_inventory_index].stick_count;
+                                        inventory_components.data[ic_index].berry_count +=
+                                            inventory_components.data[worker_inventory_index].berry_count;
+
+                                        inventory_components.data[worker_inventory_index] = .{};
                                     }
                                 }
                             }
                         }
 
-                        var rocks_on_board = false;
-                        for (0..resource_kind_components.data_count) |rkc_index| {
-                            if (resource_kind_components.data[rkc_index] == .rock) {
-                                rocks_on_board = true;
-                                break;
-                            }
-                        }
-
+                        var resources_on_board = if (resource_kind_components.data_count > 0) true else false;
                         var piles_on_board = false;
                         for (0..inventory_components.data_count) |ic_index| {
                             const entity_id = inventory_components.data_to_entity
@@ -481,8 +497,8 @@ pub fn main() !void {
                             }
                         }
 
-                        if ((piles_on_board and inventory_components.data[worker_inventory_index].rock_count >= worker_rock_carry_cap) or
-                            (piles_on_board and inventory_components.data[worker_inventory_index].rock_count > 0 and !rocks_on_board))
+                        if ((piles_on_board and sumOfInventory(&inventory_components, worker_inventory_index) >= worker_carry_cap) or
+                            (piles_on_board and sumOfInventory(&inventory_components, worker_inventory_index) > 0 and !resources_on_board))
                         {
                             var closest_pile_d: f32 = math.floatMax(f32);
                             for (0..inventory_components.data_count) |ic_index| {
@@ -499,25 +515,23 @@ pub fn main() !void {
                                 }
                             }
                             worker_state_components.data[wsc_index] = .pathing_to_target;
-                        } else if (rocks_on_board and
-                            (inventory_components.data[worker_inventory_index].rock_count < worker_rock_carry_cap))
+                        } else if (resources_on_board and
+                            (sumOfInventory(&inventory_components, worker_inventory_index) < worker_carry_cap))
                         {
-                            var closest_rock_d: f32 = math.floatMax(f32);
+                            var closest_resource_d: f32 = math.floatMax(f32);
                             for (0..resource_kind_components.data_count) |rk_component_index| {
-                                if (resource_kind_components.data[rk_component_index] == .rock) {
-                                    const entity_id = resource_kind_components.data_to_entity
-                                        .get(rk_component_index) orelse unreachable;
-                                    const tile_p_index = tile_p_components.entity_to_data
-                                        .get(entity_id) orelse unreachable;
-                                    const tile_p = tile_p_components.data[tile_p_index];
+                                const entity_id = resource_kind_components.data_to_entity
+                                    .get(rk_component_index) orelse unreachable;
+                                const tile_p_index = tile_p_components.entity_to_data
+                                    .get(entity_id) orelse unreachable;
+                                const tile_p = tile_p_components.data[tile_p_index];
 
-                                    if (rl.Vector2Distance(tile_p_components.data[worker_tile_p_index], tile_p) < closest_rock_d) {
-                                        closest_rock_d = rl.Vector2Distance(
-                                            tile_p_components.data[worker_tile_p_index],
-                                            tile_p,
-                                        );
-                                        target_tile_p_components.data[worker_target_tile_p_index] = tile_p;
-                                    }
+                                if (rl.Vector2Distance(tile_p_components.data[worker_tile_p_index], tile_p) < closest_resource_d) {
+                                    closest_resource_d = rl.Vector2Distance(
+                                        tile_p_components.data[worker_tile_p_index],
+                                        tile_p,
+                                    );
+                                    target_tile_p_components.data[worker_target_tile_p_index] = tile_p;
                                 }
                             }
                             worker_state_components.data[wsc_index] = .pathing_to_target;
@@ -561,20 +575,19 @@ pub fn main() !void {
                                     tile_p_components.data[worker_tile_p_index],
                                     tile_p_components.data[tp_component_index],
                                 ) != 0)) {
-                                    // Remove rock entity
                                     const entity_id = tile_p_components.data_to_entity
                                         .get(tp_component_index) orelse unreachable;
-
-                                    // Is this actually a rock??
-                                    if (entity_man.hasComponent(entity_id, .resource_kind)) {
+                                    if (entity_man.signatures[entity_id].eql(resource_entity_sig)) {
+                                        const rkc_index = resource_kind_components.entity_to_data
+                                            .get(entity_id) orelse unreachable;
+                                        switch (resource_kind_components.data[rkc_index]) {
+                                            .rock => inventory_components.data[worker_inventory_index].rock_count += 1,
+                                            .stick => inventory_components.data[worker_inventory_index].stick_count += 1,
+                                            .berry => inventory_components.data[worker_inventory_index].berry_count += 1,
+                                        }
                                         resource_kind_components.remove(entity_id);
-
-                                        assert(entity_man.hasComponent(entity_id, .tile_p));
                                         tile_p_components.remove(entity_id);
-
                                         entity_man.release(entity_id);
-                                        inventory_components.data[worker_inventory_index].rock_count += 1;
-
                                         break;
                                     }
                                 }
@@ -637,51 +650,43 @@ pub fn main() !void {
 
         // Draw distance map
         if (debug_draw_distance_map) {
-            const a_worker_id =
-                worker_state_components.data_to_entity.get(0) orelse unreachable;
-            const worker_target_tile_p_index = tile_p_components.entity_to_data
-                .get(a_worker_id) orelse unreachable;
-            try swpUpdateMap(
-                &scratch_arena,
-                &sample_walk_map,
-                target_tile_p_components.data[worker_target_tile_p_index],
-            );
+            for (0..1) |wsc_index| { // NOTE(caleb): Make multi maps look ok??
+                const worker_id =
+                    worker_state_components.data_to_entity.get(wsc_index) orelse unreachable;
+                const worker_target_tile_p_index = target_tile_p_components.entity_to_data
+                    .get(worker_id) orelse unreachable;
+                try swpUpdateMap(
+                    &scratch_arena,
+                    &sample_walk_map,
+                    target_tile_p_components.data[worker_target_tile_p_index],
+                );
 
-            for (0..board_rows) |grid_row_index| {
-                for (0..board_cols) |grid_col_index| {
-                    const tile_distance = if (sample_walk_map[grid_row_index * board_cols + grid_col_index] > 9)
-                        '.'
-                    else
-                        sample_walk_map[grid_row_index * board_cols + grid_col_index];
+                for (0..board_rows) |grid_row_index| {
+                    for (0..board_cols) |grid_col_index| {
+                        const tile_distance = if (sample_walk_map[grid_row_index * board_cols + grid_col_index] > 9)
+                            '.'
+                        else
+                            sample_walk_map[grid_row_index * board_cols + grid_col_index];
 
-                    const is_selected_tile = rl.Vector2Equals(.{
-                        .x = @floatFromInt(grid_col_index),
-                        .y = @floatFromInt(grid_row_index),
-                    }, selected_tile_tile_p) != 0;
+                        const is_selected_tile = rl.Vector2Equals(.{
+                            .x = @floatFromInt(grid_col_index),
+                            .y = @floatFromInt(grid_row_index),
+                        }, selected_tile_tile_p) != 0;
 
-                    const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
-                    var projected_p = isoProjGlyph(.{
-                        .x = @as(f32, @floatFromInt(grid_col_index)),
-                        .y = @as(f32, @floatFromInt(grid_row_index)),
-                    });
-                    projected_p.y += y_offset;
-                    rl.DrawTextCodepoint(
-                        rl_font,
-                        @intCast(tile_distance + '0'),
-                        projected_p,
-                        glyph_size,
-                        if (is_selected_tile) .{
-                            .r = 255,
-                            .g = 255,
-                            .b = 255,
-                            .a = 200,
-                        } else .{
-                            .r = 200,
-                            .g = 200,
-                            .b = 200,
-                            .a = 100,
-                        },
-                    );
+                        const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
+                        var projected_p = isoProjGlyph(.{
+                            .x = @as(f32, @floatFromInt(grid_col_index)),
+                            .y = @as(f32, @floatFromInt(grid_row_index)),
+                        });
+                        projected_p.y += y_offset;
+                        rl.DrawTextCodepoint(
+                            rl_font,
+                            @intCast(tile_distance + '0'),
+                            projected_p,
+                            glyph_size,
+                            .{ .r = 200, .g = 200, .b = 200, .a = 200 },
+                        );
+                    }
                 }
             }
         }
@@ -695,19 +700,45 @@ pub fn main() !void {
 
             const entity_id = tile_p_components.data_to_entity.get(tpc_index) orelse unreachable;
             if (entity_man.hasComponent(entity_id, .inventory) and !entity_man.hasComponent(entity_id, .worker_state)) {
-                rl.DrawTextCodepoint(rl_font, @intCast('P'), projected_p, glyph_size, if (is_selected_tile) rl.YELLOW else .{
-                    .r = 200,
-                    .g = 200,
-                    .b = 0,
-                    .a = 255,
-                });
+                rl.DrawTextCodepoint(
+                    rl_font,
+                    @intCast('p'),
+                    projected_p,
+                    glyph_size,
+                    if (is_selected_tile) rl.YELLOW else .{ .r = 200, .g = 200, .b = 0, .a = 255 },
+                );
             } else if (entity_man.hasComponent(entity_id, .resource_kind)) {
-                rl.DrawTextCodepoint(rl_font, @intCast('R'), projected_p, glyph_size, if (is_selected_tile) rl.WHITE else .{
-                    .r = 200,
-                    .g = 200,
-                    .b = 200,
-                    .a = 255,
-                });
+                const resource_kind_index = resource_kind_components.entity_to_data
+                    .get(entity_id) orelse unreachable;
+                switch (resource_kind_components.data[resource_kind_index]) {
+                    .rock => {
+                        rl.DrawTextCodepoint(
+                            rl_font,
+                            @intCast('r'),
+                            projected_p,
+                            glyph_size,
+                            if (is_selected_tile) rl.WHITE else .{ .r = 200, .g = 200, .b = 200, .a = 255 },
+                        );
+                    },
+                    .stick => {
+                        rl.DrawTextCodepoint(
+                            rl_font,
+                            @intCast('s'),
+                            projected_p,
+                            glyph_size,
+                            if (is_selected_tile) rl.WHITE else .{ .r = 200, .g = 200, .b = 200, .a = 255 },
+                        );
+                    },
+                    .berry => {
+                        rl.DrawTextCodepoint(
+                            rl_font,
+                            @intCast('b'),
+                            projected_p,
+                            glyph_size,
+                            if (is_selected_tile) rl.WHITE else .{ .r = 200, .g = 200, .b = 200, .a = 255 },
+                        );
+                    },
+                }
             } else if (entity_man.hasComponent(entity_id, .worker_state)) {} // Drawn seperately
             else unreachable;
         }
@@ -722,7 +753,51 @@ pub fn main() !void {
             const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
             var projected_p = isoProjGlyph(tile_p_components.data[worker_tile_p_index]);
             projected_p.y += y_offset;
-            rl.DrawTextCodepoint(rl_font, @intCast('W'), projected_p, glyph_size, rl.ORANGE);
+            rl.DrawTextCodepoint(rl_font, @intCast('@'), projected_p, glyph_size, rl.ORANGE);
+        }
+
+        // Info about selected tile
+        {
+            var offset_y: f32 = 0.0;
+            for (0..tile_p_components.data_count) |tpc_index| {
+                if (rl.Vector2Equals(selected_tile_tile_p, tile_p_components.data[tpc_index]) != 0) {
+                    defer _ = scratch_arena.reset(.retain_capacity);
+                    const scratch_ally = scratch_arena.allocator();
+
+                    const entity_id = tile_p_components.data_to_entity
+                        .get(tpc_index) orelse unreachable;
+
+                    var infoz: [:0]const u8 = undefined;
+                    if (entity_man.signatures[entity_id].eql(worker_entity_sig)) {
+                        infoz = try fmt.allocPrintZ(
+                            scratch_ally,
+                            "WORKER",
+                            .{},
+                        );
+                    } else if (entity_man.signatures[entity_id].eql(pile_entity_sig)) {
+                        infoz = try fmt.allocPrintZ(
+                            scratch_ally,
+                            "PILE",
+                            .{},
+                        );
+                    } else if (entity_man.signatures[entity_id].eql(resource_entity_sig)) {
+                        infoz = try fmt.allocPrintZ(
+                            scratch_ally,
+                            "RESOURCE",
+                            .{},
+                        );
+                    }
+
+                    rl.DrawTextEx(rl_font, infoz, .{
+                        .x = 0.0,
+                        .y = @as(f32, @floatFromInt(rl.GetScreenHeight() - @divFloor(
+                            rl.GetScreenHeight(),
+                            5,
+                        ))) + offset_y,
+                    }, glyph_size, 1.0, rl.WHITE);
+                    offset_y += 40.0;
+                }
+            }
         }
 
         // Pause text
