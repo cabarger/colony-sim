@@ -7,8 +7,6 @@
 //! 12/06/23
 //! barg8397@vandals.uidaho.edu
 //!
-//! Terry sim - colony sim toy thingy
-//!
 
 // TODO(caleb):
 // - (other colonies)
@@ -16,23 +14,166 @@
 const std = @import("std");
 const rl = @import("rl.zig");
 
-const heap = std.heap;
 const math = std.math;
 const fmt = std.fmt;
 const mem = std.mem;
+const fs = std.fs;
+const rand = std.rand;
 
 const ArrayList = std.ArrayList;
 const AutoHashMap = std.AutoHashMap;
 const StaticBitSet = std.StaticBitSet;
 
+const FixedBufferAllocator = std.heap.FixedBufferAllocator;
+
 const assert = std.debug.assert;
 
-const board_rows = 20;
-const board_cols = 20;
-const tile_width_px = 160;
-const tile_height_px = 160;
+const board_dim = 33;
+const max_height = 20;
+var height_scale: f32 = 0.0;
+const scale_factor = 2;
 const glyph_size = 30;
 const tick_rate_sec = 0.15;
+
+const TileType = enum(u8) {
+    grass = 0,
+    water,
+    sand,
+    tree,
+};
+
+/// Store info about the tileset, and tile properties.
+const Tileset = struct {
+    columns: u16,
+    tile_count: u16,
+    tile_width: u8,
+    tile_height: u8,
+    tile_id_to_type: AutoHashMap(u16, TileType),
+    texture: rl.Texture,
+
+    pub fn init(
+        tileset_fba: *FixedBufferAllocator,
+        scratch_fba: *FixedBufferAllocator,
+        tsj_path: []const u8,
+    ) !Tileset {
+        const tileset_ally = tileset_fba.allocator();
+        const scratch_ally = scratch_fba.allocator();
+        const restore_end_index = scratch_fba.end_index;
+        defer scratch_fba.end_index = restore_end_index;
+
+        var raw_ts_json: []u8 = undefined;
+        {
+            const ts_f = try fs.cwd().openFile(tsj_path, .{});
+            defer ts_f.close();
+            raw_ts_json =
+                try ts_f.reader().readAllAlloc(scratch_ally, 1024 * 1);
+        }
+        var parsed_ts_data = try std.json.parseFromSliceLeaky(
+            std.json.Value,
+            scratch_ally,
+            raw_ts_json,
+            .{},
+        );
+
+        const ts_image_pathz =
+            try fs.path.joinZ(
+            scratch_ally,
+            &.{
+                fs.path.dirname(tsj_path).?,
+                parsed_ts_data.object.get("image").?.string,
+            },
+        );
+
+        var ts = Tileset{
+            .texture = rl.LoadTexture(ts_image_pathz),
+            .columns = @intCast(parsed_ts_data.object.get("columns").?.integer),
+            .tile_width = @intCast(parsed_ts_data.object.get("tilewidth").?.integer),
+            .tile_height = @intCast(parsed_ts_data.object.get("tileheight").?.integer),
+            .tile_count = @intCast(parsed_ts_data.object.get("tilecount").?.integer),
+            .tile_id_to_type = AutoHashMap(u16, TileType).init(tileset_ally),
+        };
+        try ts.tile_id_to_type.ensureTotalCapacity(ts.tile_count);
+
+        // Fill out id to type map
+        const tile_data = parsed_ts_data.object.get("tiles").?.array;
+        for (tile_data.items) |tile| {
+            const tile_id: u16 = @intCast(tile.object.get("id").?.integer);
+            const tile_type = tile.object.get("type").?.string;
+            if (std.mem.eql(u8, tile_type, "grass")) {
+                ts.tile_id_to_type.putAssumeCapacity(tile_id, .grass);
+            } else if (std.mem.eql(u8, tile_type, "water")) {
+                ts.tile_id_to_type.putAssumeCapacity(tile_id, .water);
+            } else if (std.mem.eql(u8, tile_type, "sand")) {
+                ts.tile_id_to_type.putAssumeCapacity(tile_id, .sand);
+            } else if (std.mem.eql(u8, tile_type, "tree")) {
+                ts.tile_id_to_type.putAssumeCapacity(tile_id, .tree);
+            } else {
+                unreachable;
+            }
+        }
+
+        return ts;
+    }
+};
+
+const TextureAtlas = struct {
+    rows: u16,
+    columns: u16,
+    tile_indicies: []u16,
+    /// NOTE(caleb): Atlas data is offset by first_gid
+    first_gid: u16,
+
+    pub fn init(
+        tilemap_fba: *FixedBufferAllocator,
+        scratch_fba: *FixedBufferAllocator,
+        texture_atlas_path: []const u8,
+    ) !TextureAtlas {
+        const restore_end_index = scratch_fba.end_index;
+        defer scratch_fba.end_index = restore_end_index;
+        const tilemap_ally = tilemap_fba.allocator();
+        const scratch_ally = scratch_fba.allocator();
+
+        var atlas_json_bytes: []u8 = undefined;
+        {
+            const atlas_f = try fs.cwd().openFile(texture_atlas_path, .{});
+            defer atlas_f.close();
+            atlas_json_bytes =
+                try atlas_f.reader().readAllAlloc(scratch_ally, 1024 * 1);
+        }
+        var parsed_atlas = try std.json.parseFromSliceLeaky(
+            std.json.Value,
+            scratch_ally,
+            atlas_json_bytes,
+            .{},
+        );
+
+        const layers = parsed_atlas.object.get("layers").?.array;
+        if (layers.items.len == 1) { // Read first layer data
+            const first_layer_obj = layers.items[0].object;
+            const columns: u16 = @intCast(first_layer_obj.get("width").?.integer);
+            const rows: u16 = @intCast(first_layer_obj.get("height").?.integer);
+            var tile_indicies = try tilemap_ally.alloc(u16, columns * rows);
+            for (first_layer_obj.get("data").?.array.items, 0..) |tile_index, tile_indicies_index|
+                tile_indicies[tile_indicies_index] = @intCast(tile_index.integer);
+
+            const tilesets = parsed_atlas.object.get("tilesets").?.array;
+            if (tilesets.items.len == 1) { // Read first tileset data
+                const first_tileset_obj = tilesets.items[0].object;
+
+                return TextureAtlas{
+                    .columns = columns,
+                    .rows = rows,
+                    .tile_indicies = tile_indicies,
+                    .first_gid = @intCast(first_tileset_obj.get("firstgid").?.integer),
+                };
+            } else {
+                unreachable; // Tileset len != 1
+            }
+        } else {
+            unreachable; // Layer len != 1
+        }
+    }
+};
 
 const ComponentKind = enum(u8) {
     tile_p = 0,
@@ -186,14 +327,15 @@ const SWPEntry = struct {
 };
 
 fn swpUpdateMap(
-    scratch_arena: *heap.ArenaAllocator,
+    scratch_fba: *FixedBufferAllocator,
     sample_walk_map: []usize,
     target_p: rl.Vector2,
 ) !void {
-    defer _ = scratch_arena.reset(.retain_capacity);
-    const scratch_ally = scratch_arena.allocator();
+    const restore_end_index = scratch_fba.end_index;
+    defer scratch_fba.end_index = restore_end_index;
+    const scratch_ally = scratch_fba.allocator();
 
-    var swp_entry_list = try ArrayList(SWPEntry).initCapacity(scratch_ally, board_rows * board_cols);
+    var swp_entry_list = try ArrayList(SWPEntry).initCapacity(scratch_ally, board_dim * board_dim);
     swp_entry_list.appendAssumeCapacity(.{ .distance = 0, .tile_p = target_p });
 
     for (sample_walk_map) |*distance|
@@ -201,7 +343,7 @@ fn swpUpdateMap(
 
     while (swp_entry_list.items.len > 0) {
         const swp_entry = swp_entry_list.orderedRemove(0);
-        sample_walk_map[@intFromFloat(swp_entry.tile_p.y * board_cols + swp_entry.tile_p.x)] = swp_entry.distance;
+        sample_walk_map[@intFromFloat(swp_entry.tile_p.y * board_dim + swp_entry.tile_p.x)] = swp_entry.distance;
 
         // Add neighbors that haven't already been queued. i.e distance isn't max int...
         for (&[_]rl.Vector2{
@@ -211,32 +353,30 @@ fn swpUpdateMap(
             rl.Vector2{ .x = -1.0, .y = 0.0 },
         }) |d_tile_coords| {
             const neighbor_tile_p = rl.Vector2Add(swp_entry.tile_p, d_tile_coords);
-            if (!(neighbor_tile_p.y >= board_rows or
+            if (!(neighbor_tile_p.y >= board_dim or
                 neighbor_tile_p.y < 0 or
-                neighbor_tile_p.x >= board_cols or
+                neighbor_tile_p.x >= board_dim or
                 neighbor_tile_p.x < 0))
             {
-                if (sample_walk_map[@intFromFloat(neighbor_tile_p.y * board_cols + neighbor_tile_p.x)] == math.maxInt(usize)) {
+                if (sample_walk_map[@intFromFloat(neighbor_tile_p.y * board_dim + neighbor_tile_p.x)] == math.maxInt(usize)) {
                     swp_entry_list.appendAssumeCapacity(.{ .distance = swp_entry.distance + 1, .tile_p = neighbor_tile_p });
-                    sample_walk_map[@intFromFloat(neighbor_tile_p.y * board_cols + neighbor_tile_p.x)] = swp_entry.distance + 1;
+                    sample_walk_map[@intFromFloat(neighbor_tile_p.y * board_dim + neighbor_tile_p.x)] = swp_entry.distance + 1;
                 }
             }
         }
     }
 }
 
-inline fn isoProjMatrix() rl.Matrix {
+inline fn isoProjMatrix(tile_width_px: u8, tile_height_px: u8) rl.Matrix {
     var result = mem.zeroes(rl.Matrix);
-    result.m0 = 0.5 * tile_width_px / 2;
-    result.m1 = 0.25 * tile_height_px / 2;
-    result.m4 = -0.5 * tile_width_px / 2;
-    result.m5 = 0.25 * tile_height_px / 2;
+    result.m0 = 0.5 * @as(f32, @floatFromInt(tile_width_px));
+    result.m1 = 0.25 * @as(f32, @floatFromInt(tile_height_px));
+    result.m4 = -0.5 * @as(f32, @floatFromInt(tile_width_px));
+    result.m5 = 0.25 * @as(f32, @floatFromInt(tile_height_px));
     result.m10 = 1;
     result.m15 = 1;
     return result;
 }
-
-const iso_proj_mat = isoProjMatrix();
 
 /// [m0 m4] [x] m0*x + m4*y
 /// [m1 m5] [y] m1*x + m5*y
@@ -247,22 +387,58 @@ inline fn matrixVector2Multiply(m: rl.Matrix, p: rl.Vector2) rl.Vector2 {
     };
 }
 
-fn isoProj(p: rl.Vector2) rl.Vector2 {
-    return rl.Vector2Add(matrixVector2Multiply(iso_proj_mat, p), .{
+fn isoProj(p: rl.Vector2, tile_width_px: u8, tile_height_px: u8) rl.Vector2 {
+    return rl.Vector2Add(matrixVector2Multiply(isoProjMatrix(tile_width_px, tile_height_px), p), .{
         .x = @as(f32, @floatFromInt(rl.GetScreenWidth())) / 2.0,
-        .y = (@as(f32, @floatFromInt(rl.GetScreenHeight())) - screenSpaceBoardHeight()) / 2.0,
+        .y = (@as(f32, @floatFromInt(rl.GetScreenHeight())) - screenSpaceBoardHeight(tile_width_px, tile_height_px)) / 2.0,
     });
 }
 
-fn isoProjGlyph(p: rl.Vector2) rl.Vector2 {
-    return rl.Vector2Add(isoProj(p), .{
-        .x = -glyph_size / 2,
-        .y = glyph_size / 4,
+fn isoProjGlyph(p: rl.Vector2, tile_width_px: u8, tile_height_px: u8) rl.Vector2 {
+    return rl.Vector2Add(isoProj(p, tile_width_px, tile_height_px), .{
+        .x = glyph_size / 2 + glyph_size / 3,
+        .y = 0,
     });
 }
 
-fn screenSpaceBoardHeight() f32 {
-    return matrixVector2Multiply(iso_proj_mat, .{ .x = board_cols, .y = board_rows }).y + tile_height_px / 2.0;
+fn screenSpaceBoardHeight(tile_width_px: u8, tile_height_px: u8) f32 {
+    return matrixVector2Multiply(
+        isoProjMatrix(tile_width_px, tile_height_px),
+        .{ .x = board_dim, .y = board_dim },
+    ).y + @as(f32, @floatFromInt(tile_height_px)) / 2.0;
+}
+
+fn drawTile(
+    tileset: *const Tileset,
+    tile_id: u16,
+    dest_pos: rl.Vector2,
+    this_scale_factor: f32,
+    tint: rl.Color,
+) void {
+    const dest_rect = rl.Rectangle{
+        .x = dest_pos.x,
+        .y = dest_pos.y,
+        .width = @as(f32, @floatFromInt(tileset.tile_width)) * this_scale_factor,
+        .height = @as(f32, @floatFromInt(tileset.tile_height)) * this_scale_factor,
+    };
+
+    const target_tile_row = @divTrunc(tile_id, tileset.columns);
+    const target_tile_column = @mod(tile_id, tileset.columns);
+    const source_rect = rl.Rectangle{
+        .x = @as(f32, @floatFromInt(target_tile_column * tileset.tile_width)),
+        .y = @as(f32, @floatFromInt(target_tile_row * tileset.tile_height)),
+        .width = @floatFromInt(tileset.tile_width),
+        .height = @floatFromInt(tileset.tile_height),
+    };
+
+    rl.DrawTexturePro(
+        tileset.texture,
+        source_rect,
+        dest_rect,
+        .{ .x = 0, .y = 0 },
+        0,
+        tint,
+    );
 }
 
 inline fn sumOfInventory(ica: *ComponentArray(Inventory), ica_index: usize) usize {
@@ -273,64 +449,95 @@ inline fn sumOfInventory(ica: *ComponentArray(Inventory), ica_index: usize) usiz
     return result;
 }
 
+fn genHeightMap(
+    board_height_map: []i16,
+    point: @Vector(2, u16),
+    curr_dim: u16,
+) void {
+    if (curr_dim == 1) // Base case
+        return;
+
+    const half_dim = @divTrunc(curr_dim, 2);
+    const half_half_dim = @divTrunc(half_dim, 2);
+
+    // Diamond step
+    const top_left_height = board_height_map[(point[1] - half_dim) * board_dim + (point[0] - half_dim)];
+    const top_right_height = board_height_map[(point[1] - half_dim) * board_dim + (point[0] + half_dim)];
+    const bottom_left_height = board_height_map[(point[1] + half_dim) * board_dim + (point[0] - half_dim)];
+    const bottom_right_height = board_height_map[(point[1] + half_dim) * board_dim + (point[0] + half_dim)];
+    board_height_map[point[1] * board_dim + point[0]] = @divTrunc((top_left_height + top_right_height + bottom_left_height + bottom_right_height), 4);
+
+    // Square step
+    const left_point = @Vector(2, u16){ point[0] - half_dim, point[1] };
+    board_height_map[left_point[1] * board_dim + left_point[0]] = @divTrunc((top_left_height + bottom_left_height + board_height_map[point[1] * board_dim + point[0]]), 3);
+    const top_point = @Vector(2, u16){ point[0], point[1] - half_dim };
+    board_height_map[top_point[1] * board_dim + top_point[0]] = @divTrunc((top_left_height + top_right_height + board_height_map[point[1] * board_dim + point[0]]), 3);
+    const right_point = @Vector(2, u16){ point[0] + half_dim, point[1] };
+    board_height_map[right_point[1] * board_dim + right_point[0]] = @divTrunc((top_right_height + bottom_right_height + board_height_map[point[1] * board_dim + point[0]]), 3);
+    const bottom_point = @Vector(2, u16){ point[0], point[1] + half_dim };
+    board_height_map[bottom_point[1] * board_dim + bottom_point[0]] = @divTrunc((top_right_height + bottom_right_height + board_height_map[point[1] * board_dim + point[0]]), 3);
+
+    genHeightMap(board_height_map, @Vector(2, u16){ point[0] - half_half_dim, point[1] - half_half_dim }, half_dim); // Top left
+    genHeightMap(board_height_map, @Vector(2, u16){ point[0] + half_half_dim, point[1] - half_half_dim }, half_dim); // Top right
+    genHeightMap(board_height_map, @Vector(2, u16){ point[0] - half_half_dim, point[1] + half_half_dim }, half_dim); // Bottom left
+    genHeightMap(board_height_map, @Vector(2, u16){ point[0] + half_half_dim, point[1] + half_half_dim }, half_dim); // Bottom right
+}
+
 pub fn main() !void {
     ////////////////////////////////////
     // raylib init
-    rl.InitWindow(1600, 1200, "terry-cool");
+    rl.InitWindow(1600, 1200, "small-planet");
     rl.SetWindowState(rl.FLAG_WINDOW_RESIZABLE);
     rl.InitAudioDevice();
     const rl_font = rl.GetFontDefault();
 
     ////////////////////////////////////
     // Allocator setup
-    var scratch_mem = heap.page_allocator.alloc(u8, 1024 * 10) catch unreachable;
-    var scratch_fba = heap.FixedBufferAllocator.init(scratch_mem);
-    var scratch_arena = heap.ArenaAllocator.init(scratch_fba.allocator());
+    var scratch_mem = std.heap.page_allocator.alloc(u8, 1024 * 1024) catch unreachable;
+    var scratch_fba = FixedBufferAllocator.init(scratch_mem);
 
-    var entity_mem = heap.page_allocator.alloc(u8, 1024 * 100) catch unreachable;
-    var entity_fba = heap.FixedBufferAllocator.init(entity_mem);
-    var entity_arena = heap.ArenaAllocator.init(entity_fba.allocator());
+    var perm_mem = std.heap.page_allocator.alloc(u8, 1024 * 1024) catch unreachable;
+    var perm_fba = FixedBufferAllocator.init(perm_mem);
 
     ////////////////////////////////////
     // ECS stuff
-    const max_entity_count = 200;
+    const max_entity_count = 2000;
     var entity_man = try EntityManager.init(
-        entity_arena.allocator(),
+        perm_fba.allocator(),
         max_entity_count,
     );
 
     var tile_p_components =
         try ComponentArray(rl.Vector2).init(
-        entity_arena.allocator(),
+        perm_fba.allocator(),
         max_entity_count,
     );
 
     var target_tile_p_components =
         try ComponentArray(rl.Vector2).init(
-        entity_arena.allocator(),
+        perm_fba.allocator(),
         max_entity_count,
     );
 
     var resource_kind_components =
         try ComponentArray(ResourceKind).init(
-        entity_arena.allocator(),
+        perm_fba.allocator(),
         max_entity_count,
     );
 
     var inventory_components =
         try ComponentArray(Inventory).init(
-        entity_arena.allocator(),
+        perm_fba.allocator(),
         max_entity_count,
     );
 
     var worker_state_components =
         try ComponentArray(WorkerState).init(
-        entity_arena.allocator(),
+        perm_fba.allocator(),
         max_entity_count,
     );
 
     // Entity signatures
-
     var worker_entity_sig = StaticBitSet(component_count).initEmpty();
     worker_entity_sig.set(@intFromEnum(ComponentKind.worker_state));
     worker_entity_sig.set(@intFromEnum(ComponentKind.tile_p));
@@ -345,13 +552,47 @@ pub fn main() !void {
     resource_entity_sig.set(@intFromEnum(ComponentKind.tile_p));
 
     ////////////////////////////////////
-    // NOTE(caleb): Dirty board *gen* code
+    // Load tileset
+    const tileset = try Tileset.init(&perm_fba, &scratch_fba, "./assets/art/small-planet.tsj");
+    var grass_tile_id: u16 = undefined;
+    var water_tile_id: u16 = undefined;
+    var sand_tile_id: u16 = undefined;
+    var tree_tile_id: u16 = undefined;
+    var id_to_type_iter = tileset.tile_id_to_type.iterator();
+    while (id_to_type_iter.next()) |id_to_type_entry| {
+        switch (id_to_type_entry.value_ptr.*) {
+            .grass => grass_tile_id = id_to_type_entry.key_ptr.*,
+            .water => water_tile_id = id_to_type_entry.key_ptr.*,
+            .sand => sand_tile_id = id_to_type_entry.key_ptr.*,
+            .tree => tree_tile_id = id_to_type_entry.key_ptr.*,
+        }
+    }
 
-    // NOTE(caleb): I want to have "LARGE" worlds
+    ////////////////////////////////////
+
+    var rng_seed: u64 = 0;
+    var rng = std.rand.DefaultPrng.init(rng_seed);
+
+    ////////////////////////////////////
+    // NOTE(caleb): Dirty board *gen* code
+    var board_height_map =
+        try perm_fba.allocator().alloc(i16, board_dim * board_dim);
+    for (0..board_dim * board_dim) |board_index|
+        board_height_map[board_index] = 0;
+
+    board_height_map[0] = rng.random().intRangeLessThan(i16, -max_height, max_height); // Top Left
+    board_height_map[board_dim - 1] = rng.random().intRangeLessThan(i16, -max_height, max_height); // Top right
+    board_height_map[(board_dim - 1) * board_dim] = rng.random().intRangeLessThan(i16, -max_height, max_height); // Bottom left
+    board_height_map[(board_dim - 1) * board_dim + (board_dim - 1)] = rng.random().intRangeLessThan(i16, -max_height, max_height); // Bottom right
+    genHeightMap(board_height_map, @Vector(2, u16){
+        @divTrunc(board_dim, 2),
+        @divTrunc(board_dim, 2),
+    }, board_dim);
+
     // TODO(caleb): World chunks. Sim regions...
-    // var board: [board_rows * board_cols]Tile = undefined;
-    for (0..board_rows) |board_row_index| {
-        for (0..board_cols) |board_col_index| {
+    // var board: [board_dim * board_dim]Tile = undefined;
+    for (0..board_dim) |board_row_index| {
+        for (0..board_dim) |board_col_index| {
             // 1 in 10 to gen a rock
             if (rl.GetRandomValue(0, 10) == 0) {
                 const rock_entity_id = entity_man.newEntity();
@@ -393,8 +634,8 @@ pub fn main() !void {
         const worker_entity_id = entity_man.newEntity();
         worker_state_components.add(worker_entity_id, .choose_new_target);
         tile_p_components.add(worker_entity_id, .{
-            .x = @floatFromInt(board_cols / 2),
-            .y = @floatFromInt(board_rows / 2),
+            .x = @floatFromInt(board_dim / 2),
+            .y = @floatFromInt(board_dim / 2),
         });
         target_tile_p_components.add(worker_entity_id, .{ .x = 0.0, .y = 0.0 });
         inventory_components.add(worker_entity_id, .{});
@@ -404,7 +645,7 @@ pub fn main() !void {
     const worker_carry_cap = 3;
     var selected_tile_tile_p = rl.Vector2{ .x = 0.0, .y = 0.0 };
 
-    var sample_walk_map: [board_rows * board_cols]usize = undefined;
+    var sample_walk_map: [board_dim * board_dim]usize = undefined;
     for (&sample_walk_map) |*distance|
         distance.* = math.maxInt(usize);
 
@@ -427,12 +668,40 @@ pub fn main() !void {
         var key_pressed = rl.GetKeyPressed();
         while (key_pressed != 0) {
             if (key_pressed == rl.KEY_UP) {
+                height_scale += 0.025;
                 selected_tile_tile_p.y -= 1;
             } else if (key_pressed == rl.KEY_DOWN) {
                 selected_tile_tile_p.y += 1;
+                height_scale -= 0.025;
             } else if (key_pressed == rl.KEY_LEFT) {
+                rng_seed -= 1;
+                std.debug.print("SEED: {d}\n", .{rng_seed});
+                rng = std.rand.DefaultPrng.init(rng_seed);
+
+                board_height_map[0] = 0; //rng.random().intRangeLessThan(i16, -max_height, max_height); // Top Left
+                board_height_map[board_dim - 1] = 1; //rng.random().intRangeLessThan(i16, -max_height, max_height); // Top right
+                board_height_map[(board_dim - 1) * board_dim] = 0; //rng.random().intRangeLessThan(i16, -max_height, max_height); // Bottom left
+                board_height_map[(board_dim - 1) * board_dim + (board_dim - 1)] = 0; //rng.random().intRangeLessThan(i16, -max_height, max_height); // Bottom right
+
+                genHeightMap(board_height_map, @Vector(2, u16){
+                    @divTrunc(board_dim, 2),
+                    @divTrunc(board_dim, 2),
+                }, board_dim);
                 selected_tile_tile_p.x -= 1;
             } else if (key_pressed == rl.KEY_RIGHT) {
+                rng_seed += 1;
+                std.debug.print("SEED: {d}\n", .{rng_seed});
+                rng = std.rand.DefaultPrng.init(rng_seed);
+
+                board_height_map[0] = rng.random().intRangeLessThan(i16, -max_height, max_height); // Top Left
+                board_height_map[board_dim - 1] = rng.random().intRangeLessThan(i16, -max_height, max_height); // Top right
+                board_height_map[(board_dim - 1) * board_dim] = rng.random().intRangeLessThan(i16, -max_height, max_height); // Bottom left
+                board_height_map[(board_dim - 1) * board_dim + (board_dim - 1)] = rng.random().intRangeLessThan(i16, -max_height, max_height); // Bottom right
+
+                genHeightMap(board_height_map, @Vector(2, u16){
+                    @divTrunc(board_dim, 2),
+                    @divTrunc(board_dim, 2),
+                }, board_dim);
                 selected_tile_tile_p.x += 1;
             } else if (key_pressed == rl.KEY_F1) {
                 debug_draw_distance_map = !debug_draw_distance_map;
@@ -539,7 +808,7 @@ pub fn main() !void {
                     },
                     .pathing_to_target => {
                         try swpUpdateMap(
-                            &scratch_arena,
+                            &perm_fba,
                             &sample_walk_map,
                             target_tile_p_components.data[worker_target_tile_p_index],
                         );
@@ -554,13 +823,13 @@ pub fn main() !void {
                             rl.Vector2{ .x = -1.0, .y = 0.0 },
                         }) |d_tile_coords| {
                             const neighbor_tile_p = rl.Vector2Add(tile_p_components.data[worker_tile_p_index], d_tile_coords);
-                            if (!(neighbor_tile_p.y >= board_rows or
+                            if (!(neighbor_tile_p.y >= board_dim or
                                 neighbor_tile_p.y < 0 or
-                                neighbor_tile_p.x >= board_cols or
+                                neighbor_tile_p.x >= board_dim or
                                 neighbor_tile_p.x < 0))
                             {
-                                if (sample_walk_map[@intFromFloat(neighbor_tile_p.y * board_cols + neighbor_tile_p.x)] < closest_tile_distance) {
-                                    closest_tile_distance = sample_walk_map[@intFromFloat(neighbor_tile_p.y * board_cols + neighbor_tile_p.x)];
+                                if (sample_walk_map[@intFromFloat(neighbor_tile_p.y * board_dim + neighbor_tile_p.x)] < closest_tile_distance) {
+                                    closest_tile_distance = sample_walk_map[@intFromFloat(neighbor_tile_p.y * board_dim + neighbor_tile_p.x)];
                                     next_worker_tile_p = neighbor_tile_p;
                                 }
                             }
@@ -622,28 +891,88 @@ pub fn main() !void {
         rl.BeginDrawing();
         rl.ClearBackground(.{ .r = 0, .g = 0, .b = 0, .a = 255 });
 
+        // Draw board
+        for (0..board_dim) |row_index| {
+            for (0..board_dim) |col_index| {
+                const height = board_height_map[row_index * board_dim + col_index];
+                var dest_pos = isoProj(
+                    .{
+                        .x = @floatFromInt(col_index),
+                        .y = @floatFromInt(row_index),
+                    },
+                    @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * scale_factor),
+                    @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * scale_factor),
+                );
+                var tile_id: u16 = undefined;
+                if (height > 0) {
+                    dest_pos.y -= (@as(f32, @floatFromInt(tileset.tile_height)) * scale_factor / 2) * @as(f32, @floatFromInt(height)) * height_scale;
+                    if (height == 1) {
+                        tile_id = sand_tile_id;
+                    } else {
+                        tile_id = grass_tile_id;
+                    }
+                } else {
+                    tile_id = water_tile_id;
+                }
+                drawTile(
+                    &tileset,
+                    tile_id,
+                    dest_pos,
+                    scale_factor,
+                    rl.WHITE,
+                );
+
+                if (height >= 5) { // Draw tree
+                    dest_pos.y -= (@as(f32, @floatFromInt(tileset.tile_height)) * scale_factor / 2);
+                    drawTile(
+                        &tileset,
+                        tree_tile_id,
+                        dest_pos,
+                        scale_factor,
+                        rl.WHITE,
+                    );
+                }
+            }
+        }
+
         if (debug_draw_grid_lines) {
             // NOTE(caleb): + 1 for outer grid lines
-            for (0..board_rows + 1) |grid_row| {
-                const start_p = isoProj(.{
-                    .x = 0,
-                    .y = @as(f32, @floatFromInt(grid_row)),
-                });
-                const end_p = isoProj(.{
-                    .x = board_cols,
-                    .y = @as(f32, @floatFromInt(grid_row)),
-                });
+            for (0..board_dim + 1) |grid_row| {
+                const start_p = isoProj(
+                    .{
+                        .x = 0,
+                        .y = @as(f32, @floatFromInt(grid_row)),
+                    },
+                    @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * scale_factor),
+                    @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * scale_factor),
+                );
+                const end_p = isoProj(
+                    .{
+                        .x = board_dim,
+                        .y = @as(f32, @floatFromInt(grid_row)),
+                    },
+                    @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * scale_factor),
+                    @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * scale_factor),
+                );
                 rl.DrawLineEx(start_p, end_p, 1, rl.RED);
             }
-            for (0..board_cols + 1) |grid_col| {
-                const start_p = isoProj(.{
-                    .x = @floatFromInt(grid_col),
-                    .y = 0.0,
-                });
-                const end_p = isoProj(.{
-                    .x = @as(f32, @floatFromInt(grid_col)),
-                    .y = @as(f32, @floatFromInt(board_rows)),
-                });
+            for (0..board_dim + 1) |grid_col| {
+                const start_p = isoProj(
+                    .{
+                        .x = @floatFromInt(grid_col),
+                        .y = 0.0,
+                    },
+                    @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * scale_factor),
+                    @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * scale_factor),
+                );
+                const end_p = isoProj(
+                    .{
+                        .x = @as(f32, @floatFromInt(grid_col)),
+                        .y = @as(f32, @floatFromInt(board_dim)),
+                    },
+                    @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * scale_factor),
+                    @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * scale_factor),
+                );
                 rl.DrawLineEx(start_p, end_p, 1, rl.RED);
             }
         }
@@ -656,104 +985,118 @@ pub fn main() !void {
                 const worker_target_tile_p_index = target_tile_p_components.entity_to_data
                     .get(worker_id) orelse unreachable;
                 try swpUpdateMap(
-                    &scratch_arena,
+                    &scratch_fba,
                     &sample_walk_map,
                     target_tile_p_components.data[worker_target_tile_p_index],
                 );
 
-                for (0..board_rows) |grid_row_index| {
-                    for (0..board_cols) |grid_col_index| {
-                        const tile_distance = if (sample_walk_map[grid_row_index * board_cols + grid_col_index] > 9)
-                            '.'
-                        else
-                            sample_walk_map[grid_row_index * board_cols + grid_col_index];
+                for (0..board_dim) |grid_row_index| {
+                    for (0..board_dim) |grid_col_index| {
+                        if (sample_walk_map[grid_row_index * board_dim + grid_col_index] < 10) {
+                            const tile_distance =
+                                sample_walk_map[grid_row_index * board_dim + grid_col_index];
 
-                        const is_selected_tile = rl.Vector2Equals(.{
-                            .x = @floatFromInt(grid_col_index),
-                            .y = @floatFromInt(grid_row_index),
-                        }, selected_tile_tile_p) != 0;
+                            const is_selected_tile = rl.Vector2Equals(.{
+                                .x = @floatFromInt(grid_col_index),
+                                .y = @floatFromInt(grid_row_index),
+                            }, selected_tile_tile_p) != 0;
 
-                        const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
-                        var projected_p = isoProjGlyph(.{
-                            .x = @as(f32, @floatFromInt(grid_col_index)),
-                            .y = @as(f32, @floatFromInt(grid_row_index)),
-                        });
-                        projected_p.y += y_offset;
-                        rl.DrawTextCodepoint(
-                            rl_font,
-                            @intCast(tile_distance + '0'),
-                            projected_p,
-                            glyph_size,
-                            .{ .r = 200, .g = 200, .b = 200, .a = 200 },
-                        );
+                            const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
+                            var projected_p = isoProjGlyph(
+                                .{
+                                    .x = @as(f32, @floatFromInt(grid_col_index)),
+                                    .y = @as(f32, @floatFromInt(grid_row_index)),
+                                },
+                                @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * scale_factor),
+                                @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * scale_factor),
+                            );
+                            projected_p.y += y_offset;
+                            rl.DrawTextCodepoint(
+                                rl_font,
+                                @intCast(tile_distance + '0'),
+                                projected_p,
+                                glyph_size,
+                                .{ .r = 200, .g = 200, .b = 200, .a = 255 },
+                            );
+                        }
                     }
                 }
             }
         }
 
-        // Draw entities w/ tile p component NOTE(caleb): This breaks draw order
-        for (0..tile_p_components.data_count) |tpc_index| {
-            const is_selected_tile = rl.Vector2Equals(tile_p_components.data[tpc_index], selected_tile_tile_p) != 0;
-            const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
-            var projected_p = isoProjGlyph(tile_p_components.data[tpc_index]);
-            projected_p.y += y_offset;
-
-            const entity_id = tile_p_components.data_to_entity.get(tpc_index) orelse unreachable;
-            if (entity_man.hasComponent(entity_id, .inventory) and !entity_man.hasComponent(entity_id, .worker_state)) {
-                rl.DrawTextCodepoint(
-                    rl_font,
-                    @intCast('p'),
-                    projected_p,
-                    glyph_size,
-                    if (is_selected_tile) rl.YELLOW else .{ .r = 200, .g = 200, .b = 0, .a = 255 },
+        if (false) {
+            // Draw entities w/ tile p component NOTE(caleb): This breaks draw order
+            for (0..tile_p_components.data_count) |tpc_index| {
+                const is_selected_tile = rl.Vector2Equals(tile_p_components.data[tpc_index], selected_tile_tile_p) != 0;
+                const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
+                var projected_p = isoProjGlyph(
+                    tile_p_components.data[tpc_index],
+                    @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * scale_factor),
+                    @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * scale_factor),
                 );
-            } else if (entity_man.hasComponent(entity_id, .resource_kind)) {
-                const resource_kind_index = resource_kind_components.entity_to_data
-                    .get(entity_id) orelse unreachable;
-                switch (resource_kind_components.data[resource_kind_index]) {
-                    .rock => {
-                        rl.DrawTextCodepoint(
-                            rl_font,
-                            @intCast('r'),
-                            projected_p,
-                            glyph_size,
-                            if (is_selected_tile) rl.WHITE else .{ .r = 200, .g = 200, .b = 200, .a = 255 },
-                        );
-                    },
-                    .stick => {
-                        rl.DrawTextCodepoint(
-                            rl_font,
-                            @intCast('s'),
-                            projected_p,
-                            glyph_size,
-                            if (is_selected_tile) rl.WHITE else .{ .r = 200, .g = 200, .b = 200, .a = 255 },
-                        );
-                    },
-                    .berry => {
-                        rl.DrawTextCodepoint(
-                            rl_font,
-                            @intCast('b'),
-                            projected_p,
-                            glyph_size,
-                            if (is_selected_tile) rl.WHITE else .{ .r = 200, .g = 200, .b = 200, .a = 255 },
-                        );
-                    },
-                }
-            } else if (entity_man.hasComponent(entity_id, .worker_state)) {} // Drawn seperately
-            else unreachable;
-        }
+                projected_p.y += y_offset;
 
-        // HACK(caleb): draw workers seperately.
-        for (0..worker_state_components.data_count) |wsc_index| {
-            const worker_entity_id =
-                worker_state_components.data_to_entity.get(wsc_index) orelse unreachable;
-            const worker_tile_p_index =
-                tile_p_components.entity_to_data.get(worker_entity_id) orelse unreachable;
-            const is_selected_tile = rl.Vector2Equals(tile_p_components.data[worker_tile_p_index], selected_tile_tile_p) != 0;
-            const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
-            var projected_p = isoProjGlyph(tile_p_components.data[worker_tile_p_index]);
-            projected_p.y += y_offset;
-            rl.DrawTextCodepoint(rl_font, @intCast('@'), projected_p, glyph_size, rl.ORANGE);
+                const entity_id = tile_p_components.data_to_entity.get(tpc_index) orelse unreachable;
+                if (entity_man.hasComponent(entity_id, .inventory) and !entity_man.hasComponent(entity_id, .worker_state)) {
+                    rl.DrawTextCodepoint(
+                        rl_font,
+                        @intCast('p'),
+                        projected_p,
+                        glyph_size,
+                        if (is_selected_tile) rl.YELLOW else .{ .r = 200, .g = 200, .b = 0, .a = 255 },
+                    );
+                } else if (entity_man.hasComponent(entity_id, .resource_kind)) {
+                    const resource_kind_index = resource_kind_components.entity_to_data
+                        .get(entity_id) orelse unreachable;
+                    switch (resource_kind_components.data[resource_kind_index]) {
+                        .rock => {
+                            rl.DrawTextCodepoint(
+                                rl_font,
+                                @intCast('r'),
+                                projected_p,
+                                glyph_size,
+                                if (is_selected_tile) rl.WHITE else .{ .r = 200, .g = 200, .b = 200, .a = 255 },
+                            );
+                        },
+                        .stick => {
+                            rl.DrawTextCodepoint(
+                                rl_font,
+                                @intCast('s'),
+                                projected_p,
+                                glyph_size,
+                                if (is_selected_tile) rl.WHITE else .{ .r = 200, .g = 200, .b = 200, .a = 255 },
+                            );
+                        },
+                        .berry => {
+                            rl.DrawTextCodepoint(
+                                rl_font,
+                                @intCast('b'),
+                                projected_p,
+                                glyph_size,
+                                if (is_selected_tile) rl.WHITE else .{ .r = 200, .g = 200, .b = 200, .a = 255 },
+                            );
+                        },
+                    }
+                } else if (entity_man.hasComponent(entity_id, .worker_state)) {} // Drawn seperately
+                else unreachable;
+            }
+
+            // HACK(caleb): draw workers seperately.
+            for (0..worker_state_components.data_count) |wsc_index| {
+                const worker_entity_id =
+                    worker_state_components.data_to_entity.get(wsc_index) orelse unreachable;
+                const worker_tile_p_index =
+                    tile_p_components.entity_to_data.get(worker_entity_id) orelse unreachable;
+                const is_selected_tile = rl.Vector2Equals(tile_p_components.data[worker_tile_p_index], selected_tile_tile_p) != 0;
+                const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
+                var projected_p = isoProjGlyph(
+                    tile_p_components.data[worker_tile_p_index],
+                    @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * scale_factor),
+                    @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * scale_factor),
+                );
+                projected_p.y += y_offset;
+                rl.DrawTextCodepoint(rl_font, @intCast('@'), projected_p, glyph_size, rl.ORANGE);
+            }
         }
 
         // Info about selected tile
@@ -761,8 +1104,9 @@ pub fn main() !void {
             var offset_y: f32 = 0.0;
             for (0..tile_p_components.data_count) |tpc_index| {
                 if (rl.Vector2Equals(selected_tile_tile_p, tile_p_components.data[tpc_index]) != 0) {
-                    defer _ = scratch_arena.reset(.retain_capacity);
-                    const scratch_ally = scratch_arena.allocator();
+                    const restore_end_index = scratch_fba.end_index;
+                    defer scratch_fba.end_index = restore_end_index;
+                    const scratch_ally = scratch_fba.allocator();
 
                     const entity_id = tile_p_components.data_to_entity
                         .get(tpc_index) orelse unreachable;
@@ -787,7 +1131,6 @@ pub fn main() !void {
                             .{},
                         );
                     }
-
                     rl.DrawTextEx(rl_font, infoz, .{
                         .x = 0.0,
                         .y = @as(f32, @floatFromInt(rl.GetScreenHeight() - @divFloor(
@@ -811,8 +1154,9 @@ pub fn main() !void {
 
         // Debug info
         {
-            defer _ = scratch_arena.reset(.retain_capacity);
-            const scratch_ally = scratch_arena.allocator();
+            const restore_end_index = scratch_fba.end_index;
+            defer scratch_fba.end_index = restore_end_index;
+            const scratch_ally = scratch_fba.allocator();
 
             const game_timez = try fmt.allocPrintZ(
                 scratch_ally,
@@ -835,7 +1179,7 @@ pub fn main() !void {
                 entity_countz,
             }, 0..) |strz, strz_index| {
                 rl.DrawTextEx(rl_font, strz, .{
-                    .x = 0, //@as(f32, @floatFromInt(board_cols)) * tile_width_px,
+                    .x = 0, //@as(f32, @floatFromInt(board_dim)) * tile_width_px,
                     .y = @as(f32, @floatFromInt(strz_index)) * 40,
                 }, glyph_size, 1.0, rl.WHITE);
             }
