@@ -14,6 +14,14 @@
          "type":"grass"
         }, 
         {
+         "id":15,
+         "type":"soil"
+        }, 
+        {
+         "id":16,
+         "type":"rock"
+        }, 
+        {
          "id":17,
          "type":"sand"
         }, 
@@ -24,6 +32,14 @@
         {
          "id":19,
          "type":"tree"
+        }, 
+        {
+         "id":30,
+         "type":"forest"
+        }, 
+        {
+         "id":31,
+         "type":"plains"
         }],
  "tilewidth":34,
  "type":"tileset",
