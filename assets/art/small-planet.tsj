@@ -1,47 +1,43 @@
-{ "columns":15,
+{ "columns":16,
  "image":"small-planet-tilesheet.png",
  "imageheight":1024,
  "imagewidth":512,
  "margin":0,
  "name":"small-planet",
  "spacing":0,
- "tilecount":480,
+ "tilecount":512,
  "tiledversion":"1.10.2",
  "tileheight":32,
  "tiles":[
         {
-         "id":3,
-         "type":"grass"
-        }, 
-        {
-         "id":15,
+         "id":0,
          "type":"soil"
         }, 
         {
-         "id":16,
+         "id":1,
          "type":"rock"
         }, 
         {
-         "id":17,
+         "id":2,
          "type":"sand"
         }, 
         {
-         "id":18,
+         "id":3,
          "type":"water"
         }, 
         {
-         "id":19,
-         "type":"tree"
-        }, 
-        {
-         "id":30,
+         "id":4,
          "type":"forest"
         }, 
         {
-         "id":31,
+         "id":5,
          "type":"plains"
+        }, 
+        {
+         "id":6,
+         "type":"tree"
         }],
- "tilewidth":34,
+ "tilewidth":32,
  "type":"tileset",
  "version":"1.10"
 }
