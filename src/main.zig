@@ -28,9 +28,7 @@ const assert = std.debug.assert;
 
 const board_dim = 33; // NOTE(caleb): Must = (power of 2) + 1
 const max_height = 10;
-const height_scale: f32 = 1.0;
 const scale_inc: f32 = 0.25;
-var scale_factor: f32 = 2.0;
 const glyph_size = 30;
 const tick_rate_sec = 0.25;
 
@@ -167,6 +165,14 @@ const ComponentKind = enum(u8) {
     count, // NOTHING BELOW THIS LINE
 };
 
+const EntityKind = enum(u8) {
+    worker = 0,
+    pile,
+    resource,
+
+    count, // NOTHING BELOW THIS LINE
+};
+
 const WorkerState = enum(u8) {
     pathing_to_target,
     choose_new_target,
@@ -182,18 +188,16 @@ const Inventory = packed struct {
 const ResourceKind = enum(usize) {
     rock,
     stick,
+    tree,
     berry,
 };
 
 const component_count = @intFromEnum(ComponentKind.count);
 
-inline fn clampf32(value: f32, min: f32, max: f32) f32 {
-    return @max(min, @min(max, value));
-}
-
 const EntityManager = struct {
     free_entities: ArrayList(usize),
     signatures: []StaticBitSet(component_count),
+    signature_table: [@intFromEnum(ComponentKind.count)]StaticBitSet(component_count),
 
     pub fn init(
         ally: mem.Allocator,
@@ -202,6 +206,7 @@ const EntityManager = struct {
         var result = EntityManager{
             .free_entities = try ArrayList(usize).initCapacity(ally, entity_count), // TODO(caleb): SinglyLinkedList
             .signatures = try ally.alloc(StaticBitSet(component_count), entity_count),
+            .signature_table = undefined,
         };
         for (0..entity_count) |free_entity_index|
             result.free_entities.insertAssumeCapacity(free_entity_index, free_entity_index);
@@ -213,7 +218,26 @@ const EntityManager = struct {
                 },
                 false,
             );
+
+        // Entity signatures
+        const worker_sig_index = @intFromEnum(EntityKind.worker);
+        result.signature_table[worker_sig_index].set(@intFromEnum(ComponentKind.worker_state));
+        result.signature_table[worker_sig_index].set(@intFromEnum(ComponentKind.tile_p));
+        result.signature_table[worker_sig_index].set(@intFromEnum(ComponentKind.inventory));
+
+        const pile_sig_index = @intFromEnum(EntityKind.pile);
+        result.signature_table[pile_sig_index].set(@intFromEnum(ComponentKind.inventory));
+        result.signature_table[pile_sig_index].set(@intFromEnum(ComponentKind.tile_p));
+
+        const resource_sig_index = @intFromEnum(EntityKind.resource);
+        result.signature_table[resource_sig_index].set(@intFromEnum(ComponentKind.resource_kind));
+        result.signature_table[resource_sig_index].set(@intFromEnum(ComponentKind.tile_p));
+
         return result;
+    }
+
+    pub inline fn entitySignature(entity_man: *const EntityManager, entity_kind: EntityKind) StaticBitSet(component_count) {
+        return entity_man.signature_table[@intFromEnum(entity_kind)];
     }
 
     pub fn newEntity(entity_man: *EntityManager) usize {
@@ -305,12 +329,22 @@ fn ComponentArray(comptime T: type) type {
             component_array.data_to_entity.putAssumeCapacity(component_index, last_slot_entity_id);
             component_array.data_count -= 1;
         }
+
+        pub fn reset(component_array: *@This()) void {
+            component_array.entity_to_data.clearRetainingCapacity();
+            component_array.data_to_entity.clearRetainingCapacity();
+            component_array.data_count = 0;
+        }
     };
 }
 
 inline fn vector2DistanceU16(v1: @Vector(2, u16), v2: @Vector(2, u16)) f32 {
     const result = @sqrt(@as(f32, @floatFromInt((v1[0] - v2[0]) * (v1[0] - v2[0]) + (v1[1] - v2[1]) * (v1[1] - v2[1]))));
     return result;
+}
+
+inline fn clampf32(value: f32, min: f32, max: f32) f32 {
+    return @max(min, @min(max, value));
 }
 
 const SWPEntry = struct {
@@ -364,6 +398,15 @@ fn swpUpdateMap(
         }
     }
 }
+
+const DrawRotState = enum(u8) {
+    rotate_nonce = 0,
+    rotate_once,
+    rotate_twice,
+    rotate_thrice,
+
+    count,
+};
 
 inline fn isoProjMatrix() rl.Matrix {
     var result = mem.zeroes(rl.Matrix);
@@ -462,6 +505,54 @@ fn drawTile(
     rl.DrawTexturePro(tileset.texture, source_rect, dest_rect, .{ .x = 0, .y = 0 }, 0, tint);
 }
 
+/// NOTE(Caleb): WTF chill with the params.
+fn drawTileFromCoords(
+    world: *const World,
+    tileset: *const Tileset,
+    source_row_index: usize,
+    source_col_index: usize,
+    dest_row_index: usize,
+    dest_col_index: usize,
+    scaled_tile_dim: rl.Vector2,
+    board_translation: rl.Vector2,
+    selected_tile_p: @Vector(2, i8),
+    height_scale: f32,
+    scale_factor: f32,
+) void {
+    const tile_id = world.region_data[source_row_index * board_dim + source_col_index]
+        .tiles[0];
+    var dest_pos = isoProj(
+        .{
+            .x = @as(f32, @floatFromInt(dest_col_index)) * scaled_tile_dim.x,
+            .y = @as(f32, @floatFromInt(dest_row_index)) * scaled_tile_dim.y,
+        },
+        @intFromFloat(scaled_tile_dim.x),
+        @intFromFloat(scaled_tile_dim.y),
+        board_translation,
+    );
+
+    // Shift selected tile up
+    if (selected_tile_p[0] == @as(i32, @intCast(dest_col_index)) and
+        selected_tile_p[1] == @as(i32, @intCast(dest_row_index)))
+        dest_pos.y -= (scaled_tile_dim.y / 2.0) * 0.25;
+
+    // Shift up by height and height scale
+    if (world.height_map[source_row_index * board_dim + source_col_index] > 0) {
+        for (0..@intCast(world.height_map[source_row_index * board_dim + source_col_index])) |_| {
+            dest_pos.y -= ((scaled_tile_dim.y / 2.0) * height_scale);
+            drawTile(tileset, tile_id, dest_pos, scale_factor, rl.WHITE);
+        }
+    } else {
+        drawTile(tileset, tile_id, dest_pos, scale_factor, rl.WHITE);
+    }
+
+    // NOTE(caleb): I will  want to draw resoruces again soon, just keeping this code around.
+    // if (height >= 5) { // Draw tree
+    //     dest_pos.y -= scaled_tile_dim.y / 2.0;
+    //     drawTile(&tileset, tree_tile_id, dest_pos, scale_factor, rl.WHITE);
+    // }
+}
+
 inline fn sumOfInventory(ica: *ComponentArray(Inventory), ica_index: usize) usize {
     var result: usize = 0;
     result += ica.data[ica_index].rock_count;
@@ -522,7 +613,7 @@ fn genWorld(
     world: *World,
     entity_man: *EntityManager,
     tile_p_components: *ComponentArray(@Vector(2, u16)),
-    tree_entity_sig: StaticBitSet(component_count),
+    resource_kind_components: *ComponentArray(ResourceKind),
 ) !void {
     // Generate a hightmap per region and use it to write sub-region tiles.
     for (0..board_dim * board_dim) |board_index|
@@ -533,11 +624,10 @@ fn genWorld(
     world.height_map[(board_dim - 1) * board_dim + (board_dim - 1)] = rng.intRangeLessThan(i8, 0, max_height); // Bottom right
     genHeightMap(
         world.height_map,
-        @Vector(2, u8){ @divTrunc(board_dim, 2), @divTrunc(board_dim, 2) },
+        @splat(@divTrunc(board_dim, 2)),
         board_dim,
         rng,
         1.0, // NOTE(caleb): Random height scalar lower = rougher terrain
-
     );
     for (0..board_dim * board_dim) |region_tile_index| {
         const height = world.height_map[region_tile_index];
@@ -562,8 +652,9 @@ fn genWorld(
                 // 1 in 10000 to gen a tree // FIXME(caleb): THIS IS A HACK AND SHOULD BE REPLACED!!
                 if (height >= 5 and rng.uintLessThan(u16, 10000) == 0) {
                     const tree_entity_id = entity_man.newEntity();
+                    entity_man.signatures[tree_entity_id] = entity_man.entitySignature(.resource);
                     tile_p_components.add(tree_entity_id, @Vector(2, u16){ @intCast(region_tile_index), sub_region_tile_index });
-                    entity_man.signatures[tree_entity_id] = tree_entity_sig;
+                    resource_kind_components.add(tree_entity_id, .tree);
                 }
                 // else if (rl.GetRandomValue(0, 10) == 0) { // 1 in 200 for a pile
                 //     const pile_entity_id = entity_man.newEntity();
@@ -607,25 +698,6 @@ pub fn main() !void {
     var worker_state_components =
         try ComponentArray(WorkerState).init(perm_ally, max_entity_count);
 
-    // TODO(caleb): Have the entity manager know about
-
-    // Entity signatures
-    var worker_entity_sig = StaticBitSet(component_count).initEmpty();
-    worker_entity_sig.set(@intFromEnum(ComponentKind.worker_state));
-    worker_entity_sig.set(@intFromEnum(ComponentKind.tile_p));
-    worker_entity_sig.set(@intFromEnum(ComponentKind.inventory));
-
-    var pile_entity_sig = StaticBitSet(component_count).initEmpty();
-    pile_entity_sig.set(@intFromEnum(ComponentKind.inventory));
-    pile_entity_sig.set(@intFromEnum(ComponentKind.tile_p));
-
-    var resource_entity_sig = StaticBitSet(component_count).initEmpty();
-    resource_entity_sig.set(@intFromEnum(ComponentKind.resource_kind));
-    resource_entity_sig.set(@intFromEnum(ComponentKind.tile_p));
-
-    var tree_entity_sig = StaticBitSet(component_count).initEmpty();
-    tree_entity_sig.set(@intFromEnum(ComponentKind.tile_p));
-
     // Load tileset
     const tileset = try Tileset.init(&perm_fba, &scratch_fba, "./assets/art/small-planet.tsj");
 
@@ -648,7 +720,7 @@ pub fn main() !void {
         &world,
         &entity_man,
         &tile_p_components,
-        tree_entity_sig,
+        &resource_kind_components,
     );
 
     // for (0..3) |_| { // Worker entity
@@ -671,7 +743,7 @@ pub fn main() !void {
 
     const track1 = rl.LoadMusicStream("assets/music/track_1.wav");
     rl.PlayMusicStream(track1);
-    rl.SetMusicVolume(track1, 0.0);
+    rl.SetMusicVolume(track1, 1.0);
 
     var game_time_minute: usize = 0;
     var game_time_hour: usize = 0;
@@ -687,18 +759,23 @@ pub fn main() !void {
     var last_tick_time: f64 = 0;
 
     var view_mode: ViewMode = .world;
-    var selected_tile_x: i8 = -1;
-    var selected_tile_y: i8 = -1;
-    var selected_region_x: usize = 0;
-    var selected_region_y: usize = 0;
+    var selected_tile_p = @Vector(2, i8){ -1, -1 };
+    var selected_region_p = @Vector(2, u8){ 0, 0 };
+
+    var height_scale: f32 = 1.0;
+    var scale_factor: f32 = 2.0;
 
     var mouse_p: rl.Vector2 = undefined;
     var board_translation = rl.Vector2{ .x = 0, .y = 0 };
 
+    // NOTE(caleb): Determines draw order of board tiles, giving the effect
+    // of a rotation.
+    var draw_rot_state: DrawRotState = .rotate_nonce;
+
     while (!rl.WindowShouldClose()) {
-        const mouse_move = rl.GetMouseWheelMove();
-        if (mouse_move != 0) {
-            scale_factor += if (mouse_move == -1) -scale_inc else scale_inc;
+        const mouse_wheel_move = rl.GetMouseWheelMove();
+        if (mouse_wheel_move != 0) {
+            scale_factor += if (mouse_wheel_move == -1) -scale_inc else scale_inc;
             scale_factor = clampf32(scale_factor, 1.0, 10.0);
         }
 
@@ -717,17 +794,25 @@ pub fn main() !void {
             board_translation,
         );
         if (mouse_moved) {
-            selected_tile_x = @intFromFloat(deprojected_mouse_p.x / scaled_tile_dim.x);
-            selected_tile_y = @intFromFloat(deprojected_mouse_p.y / scaled_tile_dim.y);
+            selected_tile_p[0] = @intFromFloat(deprojected_mouse_p.x / scaled_tile_dim.x);
+            selected_tile_p[1] = @intFromFloat(deprojected_mouse_p.y / scaled_tile_dim.y);
         }
 
-        if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_MIDDLE))
+        if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_RIGHT))
             board_translation = rl.Vector2Add(board_translation, rl.GetMouseDelta());
 
         rl.UpdateMusicStream(track1);
         var key_pressed = rl.GetKeyPressed();
         while (key_pressed != 0) {
-            if (key_pressed == rl.KEY_KP_6 or key_pressed == rl.KEY_KP_4) {
+            if (key_pressed == rl.KEY_R and rl.IsKeyDown(rl.KEY_LEFT_SHIFT)) {
+                draw_rot_state =
+                    @enumFromInt(@mod(@as(i8, @intCast(@intFromEnum(draw_rot_state))) - 1, @intFromEnum(DrawRotState.count)));
+            } else if (key_pressed == rl.KEY_R) {
+                draw_rot_state =
+                    @enumFromInt((@intFromEnum(draw_rot_state) + 1) % @intFromEnum(DrawRotState.count));
+            } else if (key_pressed == rl.KEY_H) {
+                height_scale = if (height_scale == 1.0) 0.0 else 1.0;
+            } else if (key_pressed == rl.KEY_KP_6 or key_pressed == rl.KEY_KP_4) {
                 if (key_pressed == rl.KEY_KP_6) {
                     seed += 1;
                 } else if (key_pressed == rl.KEY_KP_4 and seed > 0)
@@ -738,9 +823,8 @@ pub fn main() !void {
                 while (entity_man.free_entities.capacity != entity_man.free_entities.items.len)
                     entity_man.free_entities.insertAssumeCapacity(entity_man.free_entities.items.len, entity_man.free_entities.items.len);
 
-                tile_p_components.entity_to_data.clearRetainingCapacity();
-                tile_p_components.data_to_entity.clearRetainingCapacity();
-                tile_p_components.data_count = 0;
+                tile_p_components.reset();
+                resource_kind_components.reset();
 
                 try genWorld(
                     xoshiro_256.random(),
@@ -748,7 +832,7 @@ pub fn main() !void {
                     &world,
                     &entity_man,
                     &tile_p_components,
-                    tree_entity_sig,
+                    &resource_kind_components,
                 );
                 // for (0..board_dim) |row| {
                 //     for (0..board_dim) |col| {
@@ -759,13 +843,13 @@ pub fn main() !void {
             } else if (key_pressed == rl.KEY_UP) {
                 tick_granularity =
                     @enumFromInt((@intFromEnum(tick_granularity) + 1) % @intFromEnum(TickGranularity.count));
-                selected_tile_y -= 1;
+                selected_tile_p[1] -= 1;
             } else if (key_pressed == rl.KEY_DOWN) {
-                selected_tile_y += 1;
+                selected_tile_p[1] += 1;
             } else if (key_pressed == rl.KEY_LEFT) {
-                selected_tile_x -= 1;
+                selected_tile_p[0] -= 1;
             } else if (key_pressed == rl.KEY_RIGHT) {
-                selected_tile_x += 1;
+                selected_tile_p[0] += 1;
             } else if (key_pressed == rl.KEY_F1) {
                 debug_draw_distance_map = !debug_draw_distance_map;
             } else if (key_pressed == rl.KEY_F2) {
@@ -774,12 +858,11 @@ pub fn main() !void {
                 view_mode = .world;
             } else if (key_pressed == rl.KEY_ENTER and view_mode == .world) {
                 // Check for a valid world_tile_p
-                if ((selected_tile_x >= 0 and selected_tile_x < board_dim) and
-                    (selected_tile_y >= 0 and selected_tile_y < board_dim))
-                {
+                const zero_vec: @Vector(2, i8) = @splat(0);
+                const dim_vec: @Vector(2, i8) = @splat(board_dim);
+                if (@reduce(.And, selected_tile_p >= zero_vec) and @reduce(.And, selected_tile_p < dim_vec)) {
                     view_mode = .region;
-                    selected_region_x = @intCast(selected_tile_x);
-                    selected_region_y = @intCast(selected_tile_y);
+                    selected_region_p = @intCast(selected_tile_p);
                 }
             } else if (key_pressed == rl.KEY_SPACE) {
                 is_paused = !is_paused;
@@ -788,17 +871,6 @@ pub fn main() !void {
                 } else last_tick_time += rl.GetTime() - pause_start_time;
             }
             key_pressed = rl.GetKeyPressed();
-        }
-
-        if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) {
-            // Check for a valid world_tile_p
-            if ((selected_tile_x >= 0 and selected_tile_x < board_dim) and
-                (selected_tile_y >= 0 and selected_tile_y < board_dim))
-            {
-                view_mode = .region;
-                selected_region_x = @intCast(selected_tile_x);
-                selected_region_y = @intCast(selected_tile_y);
-            }
         }
 
         if (!is_paused and rl.GetTime() - last_tick_time >= tick_rate_sec) {
@@ -818,7 +890,7 @@ pub fn main() !void {
                             for (0..inventory_components.data_count) |ic_index| {
                                 const entity_id = inventory_components.data_to_entity
                                     .get(ic_index) orelse unreachable;
-                                if (entity_man.signatures[entity_id].eql(pile_entity_sig)) { // Filter for piles
+                                if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.pile))) { // Filter for piles
                                     const storage_tile_p_index = tile_p_components.entity_to_data
                                         .get(entity_id) orelse unreachable;
                                     if (@reduce(.And, tile_p_components.data[worker_tile_p_index] ==
@@ -841,7 +913,7 @@ pub fn main() !void {
                         for (0..inventory_components.data_count) |ic_index| {
                             const entity_id = inventory_components.data_to_entity
                                 .get(ic_index) orelse unreachable;
-                            if (entity_man.signatures[entity_id].eql(pile_entity_sig)) {
+                            if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.pile))) {
                                 piles_on_board = true;
                                 break;
                             }
@@ -854,7 +926,7 @@ pub fn main() !void {
                             for (0..inventory_components.data_count) |ic_index| {
                                 const entity_id = inventory_components.data_to_entity
                                     .get(ic_index) orelse unreachable;
-                                if (entity_man.signatures[entity_id].eql(pile_entity_sig)) { // Filter for piles
+                                if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.pile))) { // Filter for piles
                                     const storage_tile_p_index =
                                         tile_p_components.entity_to_data.get(entity_id) orelse unreachable;
                                     const storage_tile_p = tile_p_components.data[storage_tile_p_index];
@@ -928,13 +1000,14 @@ pub fn main() !void {
                                 if (@reduce(.And, tile_p_components.data[worker_tile_p_index] == tile_p_components.data[tp_component_index])) {
                                     const entity_id = tile_p_components.data_to_entity
                                         .get(tp_component_index) orelse unreachable;
-                                    if (entity_man.signatures[entity_id].eql(resource_entity_sig)) {
+                                    if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.resource))) {
                                         const rkc_index = resource_kind_components.entity_to_data
                                             .get(entity_id) orelse unreachable;
                                         switch (resource_kind_components.data[rkc_index]) {
                                             .rock => inventory_components.data[worker_inventory_index].rock_count += 1,
                                             .stick => inventory_components.data[worker_inventory_index].stick_count += 1,
                                             .berry => inventory_components.data[worker_inventory_index].berry_count += 1,
+                                            .tree => unreachable, // TODO(caleb): Handle me
                                         }
                                         resource_kind_components.remove(entity_id);
                                         tile_p_components.remove(entity_id);
@@ -990,47 +1063,61 @@ pub fn main() !void {
         // Draw board
         switch (view_mode) {
             .world => {
-                for (0..board_dim) |row_index| {
-                    for (0..board_dim) |col_index| {
-                        const tile_id = world.region_data[row_index * board_dim + col_index]
-                            .tiles[0];
-                        var dest_pos = isoProj(
-                            .{
-                                .x = @as(f32, @floatFromInt(col_index)) * scaled_tile_dim.x,
-                                .y = @as(f32, @floatFromInt(row_index)) * scaled_tile_dim.y,
-                            },
-                            @intFromFloat(scaled_tile_dim.x),
-                            @intFromFloat(scaled_tile_dim.y),
-                            board_translation,
-                        );
-
-                        // Shift selected tile up
-                        if (selected_tile_x == @as(i32, @intCast(col_index)) and
-                            selected_tile_y == @as(i32, @intCast(row_index)))
-                            dest_pos.y -= (scaled_tile_dim.y / 2.0) * 0.25;
-
-                        // Shift up by height and height scale
-                        if (world.height_map[row_index * board_dim + col_index] > 0) {
-                            for (0..@intCast(world.height_map[row_index * board_dim + col_index])) |_| {
-                                dest_pos.y -= ((scaled_tile_dim.y / 2.0) * height_scale);
-                                drawTile(&tileset, tile_id, dest_pos, scale_factor, rl.WHITE);
+                switch (draw_rot_state) {
+                    .rotate_nonce => {
+                        for (0..board_dim) |source_row_index| {
+                            for (0..board_dim) |source_col_index| {
+                                drawTileFromCoords(&world, &tileset, source_row_index, source_col_index, source_row_index, source_col_index, scaled_tile_dim, board_translation, selected_tile_p, height_scale, scale_factor);
                             }
-                        } else {
-                            drawTile(&tileset, tile_id, dest_pos, scale_factor, rl.WHITE);
                         }
-
-                        // if (height >= 5) { // Draw tree
-                        //     dest_pos.y -= scaled_tile_dim.y / 2.0;
-                        //     drawTile(&tileset, tree_tile_id, dest_pos, scale_factor, rl.WHITE);
-                        // }
-                    }
+                    },
+                    .rotate_once => {
+                        var dest_tile_coords = @Vector(2, usize){ 0, 0 };
+                        for (0..board_dim) |source_col_index| {
+                            var source_row_index: isize = board_dim - 1;
+                            while (source_row_index >= 0) : (source_row_index -= 1) {
+                                drawTileFromCoords(&world, &tileset, @intCast(source_row_index), source_col_index, dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, board_translation, selected_tile_p, height_scale, scale_factor);
+                                dest_tile_coords[0] += 1; // Increment col
+                            }
+                            dest_tile_coords[1] += 1; // Increment row
+                            dest_tile_coords[0] = 0; // Reset col
+                        }
+                    },
+                    .rotate_twice => {
+                        var dest_tile_coords = @Vector(2, usize){ 0, 0 };
+                        var source_row_index: isize = board_dim - 1;
+                        while (source_row_index >= 0) : (source_row_index -= 1) {
+                            var source_col_index: isize = board_dim - 1;
+                            while (source_col_index >= 0) : (source_col_index -= 1) {
+                                drawTileFromCoords(&world, &tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, board_translation, selected_tile_p, height_scale, scale_factor);
+                                dest_tile_coords[0] += 1; // Increment col
+                            }
+                            dest_tile_coords[1] += 1; // Increment row
+                            dest_tile_coords[0] = 0; // Reset col
+                        }
+                    },
+                    .rotate_thrice => {
+                        var dest_tile_coords = @Vector(2, usize){ 0, 0 };
+                        var source_col_index: isize = board_dim - 1;
+                        while (source_col_index >= 0) : (source_col_index -= 1) {
+                            for (0..board_dim) |source_row_index| {
+                                drawTileFromCoords(&world, &tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, board_translation, selected_tile_p, height_scale, scale_factor);
+                                dest_tile_coords[0] += 1; // Increment col
+                            }
+                            dest_tile_coords[1] += 1; // Increment row
+                            dest_tile_coords[0] = 0; // Reset col
+                        }
+                    },
+                    else => unreachable,
                 }
             },
             .region => {
                 for (0..board_dim) |region_row_index| {
                     for (0..board_dim) |region_col_index| {
-                        const tile_id = world.region_data[selected_region_y * board_dim + selected_region_x]
-                            .tiles[region_row_index * board_dim + region_col_index];
+                        const tile_id = world.region_data[
+                            @as(usize, @intCast(selected_region_p[1])) *
+                                board_dim + @as(usize, @intCast(selected_region_p[0]))
+                        ].tiles[region_row_index * board_dim + region_col_index];
                         var dest_pos = isoProj(
                             .{
                                 .x = @as(f32, @floatFromInt(region_col_index)) * scaled_tile_dim.x,
@@ -1042,8 +1129,8 @@ pub fn main() !void {
                         );
 
                         // Shift selected tile up
-                        if (selected_tile_x == @as(i32, @intCast(region_col_index)) and
-                            selected_tile_y == @as(i32, @intCast(region_row_index)))
+                        if (selected_tile_p[0] == @as(i32, @intCast(region_col_index)) and
+                            selected_tile_p[1] == @as(i32, @intCast(region_row_index)))
                             dest_pos.y -= (scaled_tile_dim.y / 2.0) * 0.25;
 
                         drawTile(&tileset, tile_id, dest_pos, scale_factor, rl.WHITE);
@@ -1117,8 +1204,8 @@ pub fn main() !void {
                             const tile_distance =
                                 sample_walk_map[grid_row_index * board_dim + grid_col_index];
 
-                            const is_selected_tile = (selected_tile_x == @as(i32, @intCast(grid_col_index)) and
-                                selected_tile_y == @as(i32, @intCast(grid_row_index)));
+                            const is_selected_tile = (selected_tile_p[0] == @as(i32, @intCast(grid_col_index)) and
+                                selected_tile_p[1] == @as(i32, @intCast(grid_row_index)));
 
                             const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
                             var projected_p = isoProjGlyph(
@@ -1234,19 +1321,19 @@ pub fn main() !void {
                         .get(tpc_index) orelse unreachable;
 
                     var infoz: [:0]const u8 = undefined;
-                    if (entity_man.signatures[entity_id].eql(worker_entity_sig)) {
+                    if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.worker))) {
                         infoz = try fmt.allocPrintZ(
                             scratch_ally,
                             "WORKER",
                             .{},
                         );
-                    } else if (entity_man.signatures[entity_id].eql(pile_entity_sig)) {
+                    } else if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.pile))) {
                         infoz = try fmt.allocPrintZ(
                             scratch_ally,
                             "PILE",
                             .{},
                         );
-                    } else if (entity_man.signatures[entity_id].eql(resource_entity_sig)) {
+                    } else if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.resource))) {
                         infoz = try fmt.allocPrintZ(
                             scratch_ally,
                             "RESOURCE",
