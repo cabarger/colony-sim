@@ -20,14 +20,15 @@ const rand = std.rand;
 const ArrayList = std.ArrayList;
 const AutoHashMap = std.AutoHashMap;
 const StaticBitSet = std.StaticBitSet;
+const Random = rand.Random;
 
 const FixedBufferAllocator = std.heap.FixedBufferAllocator;
 
 const assert = std.debug.assert;
 
-const board_dim = 33; // NOTE(caleb): Must = power of 2 + 1
+const board_dim = 33; // NOTE(caleb): Must = (power of 2) + 1
 const max_height = 10;
-var height_scale: f32 = 0.3;
+const height_scale: f32 = 1.0;
 const scale_inc: f32 = 0.25;
 var scale_factor: f32 = 2.0;
 const glyph_size = 30;
@@ -35,6 +36,11 @@ const tick_rate_sec = 0.25;
 
 const RegionData = struct {
     tiles: [board_dim * board_dim]u8,
+};
+
+const World = struct {
+    region_data: []RegionData,
+    height_map: []i16,
 };
 
 const TickGranularity = enum(u8) {
@@ -53,8 +59,7 @@ const ViewMode = enum {
 
 // TODO(caleb): Rename me (this is an enum over all sprites)
 const TileType = enum(u8) {
-    grass = 0,
-    soil,
+    soil = 0,
     rock,
     water,
     sand,
@@ -126,9 +131,7 @@ const Tileset = struct {
             const tile_id: u16 = @intCast(tile.object.get("id").?.integer);
             const tile_type_str = tile.object.get("type").?.string;
             var tile_type: TileType = undefined;
-            if (std.mem.eql(u8, tile_type_str, "grass")) {
-                tile_type = .grass;
-            } else if (std.mem.eql(u8, tile_type_str, "rock")) {
+            if (std.mem.eql(u8, tile_type_str, "rock")) {
                 tile_type = .rock;
             } else if (std.mem.eql(u8, tile_type_str, "soil")) {
                 tile_type = .soil;
@@ -143,6 +146,7 @@ const Tileset = struct {
             } else if (std.mem.eql(u8, tile_type_str, "forest")) {
                 tile_type = .forest;
             } else {
+                std.debug.print("Unhandled tile type: {s}\n", .{tile_type_str});
                 unreachable;
             }
 
@@ -235,7 +239,7 @@ const EntityManager = struct {
         entity_man.free_entities.appendAssumeCapacity(entity_id);
     }
 
-    pub inline fn hasComponent(
+    pub fn hasComponent(
         entity_man: *EntityManager,
         entity_id: usize,
         component_kind: ComponentKind,
@@ -467,37 +471,109 @@ inline fn sumOfInventory(ica: *ComponentArray(Inventory), ica_index: usize) usiz
 }
 
 fn genHeightMap(
-    height_map: []i8,
+    height_map: []i16,
     point: @Vector(2, u16),
     curr_dim: u16,
+    rng: Random,
+    random_height_scalar: f32,
 ) void {
     if (curr_dim == 1) // Base case
         return;
 
     const half_dim = @divTrunc(curr_dim, 2);
     const half_half_dim = @divTrunc(half_dim, 2);
+    var random_height: i16 = @intFromFloat(@as(
+        f32,
+        @floatFromInt(rng.intRangeLessThan(i8, 0, max_height)),
+    ) * random_height_scalar);
+    // FIXME(caleb): The smoothness of these heightmaps is pretty
+    // bad when adding a random height as per the algorithm.
+    if (true) {
+        random_height = 0;
+    }
+    const next_random_height_scalar = @max(-1.0, random_height_scalar - math.pow(f32, 2, -random_height_scalar));
 
     // Diamond step
     const top_left_height = height_map[(point[1] - half_dim) * board_dim + (point[0] - half_dim)];
     const top_right_height = height_map[(point[1] - half_dim) * board_dim + (point[0] + half_dim)];
     const bottom_left_height = height_map[(point[1] + half_dim) * board_dim + (point[0] - half_dim)];
     const bottom_right_height = height_map[(point[1] + half_dim) * board_dim + (point[0] + half_dim)];
-    height_map[point[1] * board_dim + point[0]] = @divTrunc((top_left_height + top_right_height + bottom_left_height + bottom_right_height), 4);
+    height_map[point[1] * board_dim + point[0]] = @divTrunc((top_left_height + top_right_height + bottom_left_height + bottom_right_height), 4) + random_height;
 
     // Square step
     const left_point = @Vector(2, u16){ point[0] - half_dim, point[1] };
-    height_map[left_point[1] * board_dim + left_point[0]] = @divTrunc((top_left_height + bottom_left_height + height_map[point[1] * board_dim + point[0]]), 3);
+    height_map[left_point[1] * board_dim + left_point[0]] = @divTrunc((top_left_height + bottom_left_height + height_map[point[1] * board_dim + point[0]]), 3) + random_height;
     const top_point = @Vector(2, u16){ point[0], point[1] - half_dim };
-    height_map[top_point[1] * board_dim + top_point[0]] = @divTrunc((top_left_height + top_right_height + height_map[point[1] * board_dim + point[0]]), 3);
+    height_map[top_point[1] * board_dim + top_point[0]] = @divTrunc((top_left_height + top_right_height + height_map[point[1] * board_dim + point[0]]), 3) + random_height;
     const right_point = @Vector(2, u16){ point[0] + half_dim, point[1] };
-    height_map[right_point[1] * board_dim + right_point[0]] = @divTrunc((top_right_height + bottom_right_height + height_map[point[1] * board_dim + point[0]]), 3);
+    height_map[right_point[1] * board_dim + right_point[0]] = @divTrunc((top_right_height + bottom_right_height + height_map[point[1] * board_dim + point[0]]), 3) + random_height;
     const bottom_point = @Vector(2, u16){ point[0], point[1] + half_dim };
-    height_map[bottom_point[1] * board_dim + bottom_point[0]] = @divTrunc((top_right_height + bottom_right_height + height_map[point[1] * board_dim + point[0]]), 3);
+    height_map[bottom_point[1] * board_dim + bottom_point[0]] = @divTrunc((top_right_height + bottom_right_height + height_map[point[1] * board_dim + point[0]]), 3) + random_height;
 
-    genHeightMap(height_map, @Vector(2, u16){ point[0] - half_half_dim, point[1] - half_half_dim }, half_dim); // Top left
-    genHeightMap(height_map, @Vector(2, u16){ point[0] + half_half_dim, point[1] - half_half_dim }, half_dim); // Top right
-    genHeightMap(height_map, @Vector(2, u16){ point[0] - half_half_dim, point[1] + half_half_dim }, half_dim); // Bottom left
-    genHeightMap(height_map, @Vector(2, u16){ point[0] + half_half_dim, point[1] + half_half_dim }, half_dim); // Bottom right
+    genHeightMap(height_map, @Vector(2, u16){ point[0] - half_half_dim, point[1] - half_half_dim }, half_dim, rng, next_random_height_scalar); // Top left
+    genHeightMap(height_map, @Vector(2, u16){ point[0] + half_half_dim, point[1] - half_half_dim }, half_dim, rng, next_random_height_scalar); // Top right
+    genHeightMap(height_map, @Vector(2, u16){ point[0] - half_half_dim, point[1] + half_half_dim }, half_dim, rng, next_random_height_scalar); // Bottom left
+    genHeightMap(height_map, @Vector(2, u16){ point[0] + half_half_dim, point[1] + half_half_dim }, half_dim, rng, next_random_height_scalar); // Bottom right
+}
+
+fn genWorld(
+    rng: Random,
+    tileset: *const Tileset,
+    world: *World,
+    entity_man: *EntityManager,
+    tile_p_components: *ComponentArray(@Vector(2, u16)),
+    tree_entity_sig: StaticBitSet(component_count),
+) !void {
+    // Generate a hightmap per region and use it to write sub-region tiles.
+    for (0..board_dim * board_dim) |board_index|
+        world.height_map[board_index] = 0;
+    world.height_map[0] = rng.intRangeLessThan(i8, 0, max_height); // Top Left
+    world.height_map[board_dim - 1] = rng.intRangeLessThan(i8, 0, max_height); // Top right
+    world.height_map[(board_dim - 1) * board_dim] = rng.intRangeLessThan(i8, 0, max_height); // Bottom left
+    world.height_map[(board_dim - 1) * board_dim + (board_dim - 1)] = rng.intRangeLessThan(i8, 0, max_height); // Bottom right
+    genHeightMap(
+        world.height_map,
+        @Vector(2, u8){ @divTrunc(board_dim, 2), @divTrunc(board_dim, 2) },
+        board_dim,
+        rng,
+        1.0, // NOTE(caleb): Random height scalar lower = rougher terrain
+
+    );
+    for (0..board_dim * board_dim) |region_tile_index| {
+        const height = world.height_map[region_tile_index];
+        var tile_id: u16 = undefined;
+        if (height <= 0) {
+            tile_id = tileset.tile_type_to_id.get(.water).?;
+        } else if (height == 1) {
+            tile_id = tileset.tile_type_to_id.get(.sand).?;
+        } else if (height > 1 and height < 4) {
+            tile_id = tileset.tile_type_to_id.get(.forest).?;
+        } else if (height > 3 and height < 7) {
+            tile_id = tileset.tile_type_to_id.get(.plains).?;
+        } else {
+            tile_id = tileset.tile_type_to_id.get(.rock).?;
+        }
+
+        for (0..board_dim) |sub_region_row_index| {
+            for (0..board_dim) |sub_region_col_index| {
+                const sub_region_tile_index: u16 = @intCast(sub_region_row_index * board_dim + sub_region_col_index);
+                world.region_data[region_tile_index].tiles[sub_region_tile_index] = @intCast(tile_id);
+
+                // 1 in 10000 to gen a tree // FIXME(caleb): THIS IS A HACK AND SHOULD BE REPLACED!!
+                if (height >= 5 and rng.uintLessThan(u16, 10000) == 0) {
+                    const tree_entity_id = entity_man.newEntity();
+                    tile_p_components.add(tree_entity_id, @Vector(2, u16){ @intCast(region_tile_index), sub_region_tile_index });
+                    entity_man.signatures[tree_entity_id] = tree_entity_sig;
+                }
+                // else if (rl.GetRandomValue(0, 10) == 0) { // 1 in 200 for a pile
+                //     const pile_entity_id = entity_man.newEntity();
+                //     inventory_components.add(pile_entity_id, .{});
+                //     tile_p_components.add(pile_entity_id, @Vector(2, u16){ @intCast(region_tile_index), sub_region_tile_index });
+                //     entity_man.signatures[pile_entity_id] = pile_entity_sig;
+                // }
+            }
+        }
+    }
 }
 
 pub fn main() !void {
@@ -531,6 +607,8 @@ pub fn main() !void {
     var worker_state_components =
         try ComponentArray(WorkerState).init(perm_ally, max_entity_count);
 
+    // TODO(caleb): Have the entity manager know about
+
     // Entity signatures
     var worker_entity_sig = StaticBitSet(component_count).initEmpty();
     worker_entity_sig.set(@intFromEnum(ComponentKind.worker_state));
@@ -551,71 +629,27 @@ pub fn main() !void {
     // Load tileset
     const tileset = try Tileset.init(&perm_fba, &scratch_fba, "./assets/art/small-planet.tsj");
 
-    // RNG init NOTE(caleb): 232 happens to be a "good" seed for the heightmap.
-    var xoshiro_256 = std.rand.DefaultPrng.init(232);
-    const rng = xoshiro_256.random();
+    var seed: u64 = 116;
+    var xoshiro_256 = std.rand.DefaultPrng.init(seed);
 
-    // PIGGY map generation
-    var region_data = try perm_ally.alloc(
-        RegionData,
-        board_dim * board_dim,
+    var world = World{
+        .region_data = try perm_ally.alloc(
+            RegionData,
+            board_dim * board_dim,
+        ),
+        .height_map = try perm_ally.alloc(
+            i16,
+            board_dim * board_dim,
+        ),
+    };
+    try genWorld(
+        xoshiro_256.random(),
+        &tileset,
+        &world,
+        &entity_man,
+        &tile_p_components,
+        tree_entity_sig,
     );
-
-    // Generate a hightmap and use it to write sub-region tiles.
-    {
-        const restore_end_index = scratch_fba.end_index;
-        defer scratch_fba.end_index = restore_end_index;
-
-        var world_height_map =
-            try scratch_ally.alloc(i8, board_dim * board_dim);
-        for (0..board_dim * board_dim) |board_index|
-            world_height_map[board_index] = 0;
-
-        world_height_map[0] = rng.intRangeLessThan(i8, 0, max_height); // Top Left
-        world_height_map[board_dim - 1] = rng.intRangeLessThan(i8, 0, max_height); // Top right
-        world_height_map[(board_dim - 1) * board_dim] = rng.intRangeLessThan(i8, 0, max_height); // Bottom left
-        world_height_map[(board_dim - 1) * board_dim + (board_dim - 1)] = rng.intRangeLessThan(i8, 0, max_height); // Bottom right
-        genHeightMap(world_height_map, @Vector(2, u8){
-            @divTrunc(board_dim, 2),
-            @divTrunc(board_dim, 2),
-        }, board_dim);
-
-        for (0..board_dim * board_dim) |region_tile_index| {
-            const height = world_height_map[region_tile_index];
-            var tile_id: u16 = undefined;
-            if (height <= 0) {
-                tile_id = tileset.tile_type_to_id.get(.water).?;
-            } else if (height == 1) {
-                tile_id = tileset.tile_type_to_id.get(.sand).?;
-            } else if (height >= 1 and height <= 3) {
-                tile_id = tileset.tile_type_to_id.get(.forest).?;
-            } else if (height >= 4 and height <= 5) {
-                tile_id = tileset.tile_type_to_id.get(.plains).?;
-            } else {
-                tile_id = tileset.tile_type_to_id.get(.rock).?;
-            }
-
-            for (0..board_dim) |sub_region_row_index| {
-                for (0..board_dim) |sub_region_col_index| {
-                    const sub_region_tile_index: u16 = @intCast(sub_region_row_index * board_dim + sub_region_col_index);
-                    region_data[region_tile_index].tiles[sub_region_tile_index] = @intCast(tile_id);
-
-                    // 1 in 100 to gen a tree
-                    if (height >= 5 and rng.uintLessThan(u16, 100) == 0) {
-                        const tree_entity_id = entity_man.newEntity();
-                        tile_p_components.add(tree_entity_id, @Vector(2, u16){ @intCast(region_tile_index), sub_region_tile_index });
-                        entity_man.signatures[tree_entity_id] = tree_entity_sig;
-                    }
-                    // else if (rl.GetRandomValue(0, 10) == 0) { // 1 in 200 for a pile
-                    //     const pile_entity_id = entity_man.newEntity();
-                    //     inventory_components.add(pile_entity_id, .{});
-                    //     tile_p_components.add(pile_entity_id, @Vector(2, u16){ @intCast(region_tile_index), sub_region_tile_index });
-                    //     entity_man.signatures[pile_entity_id] = pile_entity_sig;
-                    // }
-                }
-            }
-        }
-    }
 
     // for (0..3) |_| { // Worker entity
     //     const worker_entity_id = entity_man.newEntity();
@@ -693,7 +727,36 @@ pub fn main() !void {
         rl.UpdateMusicStream(track1);
         var key_pressed = rl.GetKeyPressed();
         while (key_pressed != 0) {
-            if (key_pressed == rl.KEY_UP) {
+            if (key_pressed == rl.KEY_KP_6 or key_pressed == rl.KEY_KP_4) {
+                if (key_pressed == rl.KEY_KP_6) {
+                    seed += 1;
+                } else if (key_pressed == rl.KEY_KP_4 and seed > 0)
+                    seed -= 1;
+                std.debug.print("{d}\n", .{seed});
+                xoshiro_256 = rand.DefaultPrng.init(seed);
+
+                while (entity_man.free_entities.capacity != entity_man.free_entities.items.len)
+                    entity_man.free_entities.insertAssumeCapacity(entity_man.free_entities.items.len, entity_man.free_entities.items.len);
+
+                tile_p_components.entity_to_data.clearRetainingCapacity();
+                tile_p_components.data_to_entity.clearRetainingCapacity();
+                tile_p_components.data_count = 0;
+
+                try genWorld(
+                    xoshiro_256.random(),
+                    &tileset,
+                    &world,
+                    &entity_man,
+                    &tile_p_components,
+                    tree_entity_sig,
+                );
+                // for (0..board_dim) |row| {
+                //     for (0..board_dim) |col| {
+                //         std.debug.print("{d} ", .{world.height_map[row * board_dim + col]});
+                //     }
+                //     std.debug.print("\n", .{});
+                // }
+            } else if (key_pressed == rl.KEY_UP) {
                 tick_granularity =
                     @enumFromInt((@intFromEnum(tick_granularity) + 1) % @intFromEnum(TickGranularity.count));
                 selected_tile_y -= 1;
@@ -929,7 +992,7 @@ pub fn main() !void {
             .world => {
                 for (0..board_dim) |row_index| {
                     for (0..board_dim) |col_index| {
-                        const tile_id = region_data[row_index * board_dim + col_index]
+                        const tile_id = world.region_data[row_index * board_dim + col_index]
                             .tiles[0];
                         var dest_pos = isoProj(
                             .{
@@ -946,7 +1009,15 @@ pub fn main() !void {
                             selected_tile_y == @as(i32, @intCast(row_index)))
                             dest_pos.y -= (scaled_tile_dim.y / 2.0) * 0.25;
 
-                        drawTile(&tileset, tile_id, dest_pos, scale_factor, rl.WHITE);
+                        // Shift up by height and height scale
+                        if (world.height_map[row_index * board_dim + col_index] > 0) {
+                            for (0..@intCast(world.height_map[row_index * board_dim + col_index])) |_| {
+                                dest_pos.y -= ((scaled_tile_dim.y / 2.0) * height_scale);
+                                drawTile(&tileset, tile_id, dest_pos, scale_factor, rl.WHITE);
+                            }
+                        } else {
+                            drawTile(&tileset, tile_id, dest_pos, scale_factor, rl.WHITE);
+                        }
 
                         // if (height >= 5) { // Draw tree
                         //     dest_pos.y -= scaled_tile_dim.y / 2.0;
@@ -958,7 +1029,7 @@ pub fn main() !void {
             .region => {
                 for (0..board_dim) |region_row_index| {
                     for (0..board_dim) |region_col_index| {
-                        const tile_id = region_data[selected_region_y * board_dim + selected_region_x]
+                        const tile_id = world.region_data[selected_region_y * board_dim + selected_region_x]
                             .tiles[region_row_index * board_dim + region_col_index];
                         var dest_pos = isoProj(
                             .{
