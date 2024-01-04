@@ -192,12 +192,10 @@ const ResourceKind = enum(usize) {
     berry,
 };
 
-const component_count = @intFromEnum(ComponentKind.count);
-
 const EntityManager = struct {
     free_entities: ArrayList(usize),
-    signatures: []StaticBitSet(component_count),
-    signature_table: [@intFromEnum(ComponentKind.count)]StaticBitSet(component_count),
+    signatures: []StaticBitSet(@intFromEnum(ComponentKind.count)),
+    signature_table: [@intFromEnum(EntityKind.count)]StaticBitSet(@intFromEnum(ComponentKind.count)),
 
     pub fn init(
         ally: mem.Allocator,
@@ -205,7 +203,7 @@ const EntityManager = struct {
     ) !EntityManager {
         var result = EntityManager{
             .free_entities = try ArrayList(usize).initCapacity(ally, entity_count), // TODO(caleb): SinglyLinkedList
-            .signatures = try ally.alloc(StaticBitSet(component_count), entity_count),
+            .signatures = try ally.alloc(StaticBitSet(@intFromEnum(ComponentKind.count)), entity_count),
             .signature_table = undefined,
         };
         for (0..entity_count) |free_entity_index|
@@ -236,7 +234,7 @@ const EntityManager = struct {
         return result;
     }
 
-    pub inline fn entitySignature(entity_man: *const EntityManager, entity_kind: EntityKind) StaticBitSet(component_count) {
+    pub inline fn entitySignature(entity_man: *const EntityManager, entity_kind: EntityKind) StaticBitSet(@intFromEnum(ComponentKind.count)) {
         return entity_man.signature_table[@intFromEnum(entity_kind)];
     }
 
