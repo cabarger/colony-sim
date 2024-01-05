@@ -1,11 +1,13 @@
 //!
-//! main.zig
+//! small_planet_platform.zig
 //!
 //! Polymorphic Games
 //! zig 0.11.0
 //! Caleb Barger
 //! 12/06/23
 //! barg8397@vandals.uidaho.edu
+//!
+//! Platform layer for small planet
 //!
 
 const std = @import("std");
@@ -741,7 +743,7 @@ pub fn main() !void {
 
     const track1 = rl.LoadMusicStream("assets/music/track_1.wav");
     rl.PlayMusicStream(track1);
-    rl.SetMusicVolume(track1, 1.0);
+    rl.SetMusicVolume(track1, 0.0);
 
     var game_time_minute: usize = 0;
     var game_time_hour: usize = 0;
@@ -770,7 +772,36 @@ pub fn main() !void {
     // of a rotation.
     var draw_rot_state: DrawRotState = .rotate_nonce;
 
+    // FIXME(caleb): Use relpath form lib_dir in the future...
+    const active_game_code_path = "zig-out/lib/active-sp-game-code.dll";
+    const game_code_path = "zig-out/lib/sp-game-code.dll";
+    var game_code_file_ctime = (try fs.cwd().statFile(game_code_path)).ctime;
+
+    const lib_dir_path = "zig-out/lib/";
+    const lib_dir = try fs.cwd().openDir(lib_dir_path, .{});
+    try fs.cwd().copyFile(game_code_path, lib_dir, "active-sp-game-code.dll", .{});
+
+    // FIXME(caleb): !!!!DANGER PLATFORM SPECIFIC CODE!!!!
+    const lpstr_game_code_path = try perm_ally.alloc(u16, active_game_code_path.len + 1);
+    for (active_game_code_path, 0..) |byte, byte_index|
+        lpstr_game_code_path[byte_index] = byte;
+    lpstr_game_code_path[active_game_code_path.len] = 0;
+
+    var game_code_hmodule = try std.os.windows.LoadLibraryW(@ptrCast(lpstr_game_code_path.ptr));
+    var game_code_fn_proc_address = std.os.windows.kernel32.GetProcAddress(game_code_hmodule, "smallPlanetGameCode") orelse unreachable;
+    var game_code_fn: *fn () void = @ptrCast(game_code_fn_proc_address);
+
     while (!rl.WindowShouldClose()) {
+        if ((try std.fs.cwd().statFile(game_code_path)).ctime != game_code_file_ctime) {
+            std.os.windows.FreeLibrary(game_code_hmodule);
+            try fs.cwd().copyFile(game_code_path, lib_dir, "active-sp-game-code.dll", .{});
+            game_code_hmodule = try std.os.windows.LoadLibraryW(@ptrCast(lpstr_game_code_path.ptr));
+            game_code_fn_proc_address = std.os.windows.kernel32.GetProcAddress(game_code_hmodule, "smallPlanetGameCode") orelse unreachable;
+            game_code_fn = @ptrCast(game_code_fn_proc_address);
+        }
+
+        game_code_fn();
+
         const mouse_wheel_move = rl.GetMouseWheelMove();
         if (mouse_wheel_move != 0) {
             scale_factor += if (mouse_wheel_move == -1) -scale_inc else scale_inc;
