@@ -12,12 +12,16 @@
 
 const std = @import("std");
 const rl = @import("rl.zig");
+const platform = @import("small_planet_platform.zig");
+const ecs = @import("ecs.zig");
 
 const math = std.math;
 const fmt = std.fmt;
 const mem = std.mem;
 const fs = std.fs;
 const rand = std.rand;
+
+const Tileset = @import("Tileset.zig");
 
 const ArrayList = std.ArrayList;
 const AutoHashMap = std.AutoHashMap;
@@ -33,6 +37,7 @@ const max_height = 10;
 const scale_inc: f32 = 0.25;
 const glyph_size = 30;
 const tick_rate_sec = 0.25;
+const worker_carry_cap = 3;
 
 const RegionData = struct {
     tiles: [board_dim * board_dim]u8,
@@ -56,287 +61,6 @@ const ViewMode = enum {
     region,
     world,
 };
-
-// TODO(caleb): Rename me (this is an enum over all sprites)
-const TileType = enum(u8) {
-    soil = 0,
-    rock,
-    water,
-    sand,
-    tree,
-    plains,
-    forest,
-};
-
-/// Store info about the tileset, and tile properties.
-const Tileset = struct {
-    columns: u16,
-    tile_count: u16,
-    tile_width: u16,
-    tile_height: u16,
-
-    tile_id_to_type: AutoHashMap(u16, TileType),
-    tile_type_to_id: AutoHashMap(TileType, u16),
-
-    texture: rl.Texture,
-
-    pub fn init(
-        tileset_fba: *FixedBufferAllocator,
-        scratch_fba: *FixedBufferAllocator,
-        tsj_path: []const u8,
-    ) !Tileset {
-        const tileset_ally = tileset_fba.allocator();
-        const scratch_ally = scratch_fba.allocator();
-        const restore_end_index = scratch_fba.end_index;
-        defer scratch_fba.end_index = restore_end_index;
-
-        var raw_ts_json: []u8 = undefined;
-        {
-            const ts_f = try fs.cwd().openFile(tsj_path, .{});
-            defer ts_f.close();
-            raw_ts_json =
-                try ts_f.reader().readAllAlloc(scratch_ally, 1024 * 1);
-        }
-        var parsed_ts_data = try std.json.parseFromSliceLeaky(
-            std.json.Value,
-            scratch_ally,
-            raw_ts_json,
-            .{},
-        );
-
-        const ts_image_pathz =
-            try fs.path.joinZ(
-            scratch_ally,
-            &.{
-                fs.path.dirname(tsj_path).?,
-                parsed_ts_data.object.get("image").?.string,
-            },
-        );
-
-        var ts = Tileset{
-            .texture = rl.LoadTexture(ts_image_pathz),
-            .columns = @intCast(parsed_ts_data.object.get("columns").?.integer),
-            .tile_width = @intCast(parsed_ts_data.object.get("tilewidth").?.integer),
-            .tile_height = @intCast(parsed_ts_data.object.get("tileheight").?.integer),
-            .tile_count = @intCast(parsed_ts_data.object.get("tilecount").?.integer),
-            .tile_id_to_type = AutoHashMap(u16, TileType).init(tileset_ally),
-            .tile_type_to_id = AutoHashMap(TileType, u16).init(tileset_ally),
-        };
-        try ts.tile_id_to_type.ensureTotalCapacity(ts.tile_count);
-        try ts.tile_type_to_id.ensureTotalCapacity(ts.tile_count);
-
-        // Fill out id <=> type maps
-        const tile_data = parsed_ts_data.object.get("tiles").?.array;
-        for (tile_data.items) |tile| {
-            const tile_id: u16 = @intCast(tile.object.get("id").?.integer);
-            const tile_type_str = tile.object.get("type").?.string;
-            var tile_type: TileType = undefined;
-            if (std.mem.eql(u8, tile_type_str, "rock")) {
-                tile_type = .rock;
-            } else if (std.mem.eql(u8, tile_type_str, "soil")) {
-                tile_type = .soil;
-            } else if (std.mem.eql(u8, tile_type_str, "water")) {
-                tile_type = .water;
-            } else if (std.mem.eql(u8, tile_type_str, "sand")) {
-                tile_type = .sand;
-            } else if (std.mem.eql(u8, tile_type_str, "tree")) {
-                tile_type = .tree;
-            } else if (std.mem.eql(u8, tile_type_str, "plains")) {
-                tile_type = .plains;
-            } else if (std.mem.eql(u8, tile_type_str, "forest")) {
-                tile_type = .forest;
-            } else {
-                std.debug.print("Unhandled tile type: {s}\n", .{tile_type_str});
-                unreachable;
-            }
-
-            ts.tile_id_to_type.putAssumeCapacity(tile_id, tile_type);
-            ts.tile_type_to_id.putAssumeCapacity(tile_type, tile_id);
-        }
-
-        return ts;
-    }
-};
-
-const ComponentKind = enum(u8) {
-    tile_p = 0,
-    resource_kind,
-    inventory,
-    worker_state,
-
-    count, // NOTHING BELOW THIS LINE
-};
-
-const EntityKind = enum(u8) {
-    worker = 0,
-    pile,
-    resource,
-
-    count, // NOTHING BELOW THIS LINE
-};
-
-const WorkerState = enum(u8) {
-    pathing_to_target,
-    choose_new_target,
-    idle,
-};
-
-const Inventory = packed struct {
-    rock_count: u16 = 0,
-    stick_count: u16 = 0,
-    berry_count: u16 = 0,
-};
-
-const ResourceKind = enum(usize) {
-    rock,
-    stick,
-    tree,
-    berry,
-};
-
-const EntityManager = struct {
-    free_entities: ArrayList(usize),
-    signatures: []StaticBitSet(@intFromEnum(ComponentKind.count)),
-    signature_table: [@intFromEnum(EntityKind.count)]StaticBitSet(@intFromEnum(ComponentKind.count)),
-
-    pub fn init(
-        ally: mem.Allocator,
-        entity_count: usize,
-    ) !EntityManager {
-        var result = EntityManager{
-            .free_entities = try ArrayList(usize).initCapacity(ally, entity_count), // TODO(caleb): SinglyLinkedList
-            .signatures = try ally.alloc(StaticBitSet(@intFromEnum(ComponentKind.count)), entity_count),
-            .signature_table = undefined,
-        };
-        for (0..entity_count) |free_entity_index|
-            result.free_entities.insertAssumeCapacity(free_entity_index, free_entity_index);
-        for (result.signatures) |*mask|
-            mask.setRangeValue(
-                .{
-                    .start = 0,
-                    .end = @intFromEnum(ComponentKind.count),
-                },
-                false,
-            );
-
-        // Entity signatures
-        const worker_sig_index = @intFromEnum(EntityKind.worker);
-        result.signature_table[worker_sig_index].set(@intFromEnum(ComponentKind.worker_state));
-        result.signature_table[worker_sig_index].set(@intFromEnum(ComponentKind.tile_p));
-        result.signature_table[worker_sig_index].set(@intFromEnum(ComponentKind.inventory));
-
-        const pile_sig_index = @intFromEnum(EntityKind.pile);
-        result.signature_table[pile_sig_index].set(@intFromEnum(ComponentKind.inventory));
-        result.signature_table[pile_sig_index].set(@intFromEnum(ComponentKind.tile_p));
-
-        const resource_sig_index = @intFromEnum(EntityKind.resource);
-        result.signature_table[resource_sig_index].set(@intFromEnum(ComponentKind.resource_kind));
-        result.signature_table[resource_sig_index].set(@intFromEnum(ComponentKind.tile_p));
-
-        return result;
-    }
-
-    pub inline fn entitySignature(entity_man: *const EntityManager, entity_kind: EntityKind) StaticBitSet(@intFromEnum(ComponentKind.count)) {
-        return entity_man.signature_table[@intFromEnum(entity_kind)];
-    }
-
-    pub fn newEntity(entity_man: *EntityManager) usize {
-        assert(entity_man.free_entities.items.len > 0);
-        const entity_id = entity_man.free_entities.pop();
-        entity_man.signatures[entity_id].setRangeValue(
-            .{ .start = 0, .end = @intFromEnum(ComponentKind.count) },
-            false,
-        );
-        return entity_id;
-    }
-
-    pub inline fn componentMaskSet(
-        entity_man: *EntityManager,
-        entity_id: usize,
-        kind: ComponentKind,
-    ) void {
-        entity_man.signatures[entity_id]
-            .set(@intFromEnum(kind));
-    }
-
-    pub inline fn release(entity_man: *EntityManager, entity_id: usize) void {
-        entity_man.free_entities.appendAssumeCapacity(entity_id);
-    }
-
-    pub fn hasComponent(
-        entity_man: *EntityManager,
-        entity_id: usize,
-        component_kind: ComponentKind,
-    ) bool {
-        return entity_man.signatures[entity_id].isSet(@intFromEnum(component_kind));
-    }
-};
-
-fn ComponentArray(comptime T: type) type {
-    return struct {
-        /// Component data
-        data: []T,
-        /// Component data count
-        data_count: usize,
-
-        /// Entity id => data index
-        entity_to_data: AutoHashMap(usize, usize),
-
-        /// Data index => entity id
-        data_to_entity: AutoHashMap(usize, usize),
-
-        pub fn init(
-            ally: mem.Allocator,
-            entity_count: usize,
-        ) !@This() {
-            var result = @This(){
-                .data = try ally.alloc(T, entity_count),
-                .data_count = 0,
-                .entity_to_data = AutoHashMap(usize, usize).init(ally),
-                .data_to_entity = AutoHashMap(usize, usize).init(ally),
-            };
-            try result.entity_to_data.ensureTotalCapacity(@intCast(entity_count));
-            try result.data_to_entity.ensureTotalCapacity(@intCast(entity_count));
-            return result;
-        }
-
-        pub fn add(component_array: *@This(), entity_id: usize, item: T) void {
-            component_array.data[component_array.data_count] = item;
-            component_array.data_to_entity.putAssumeCapacity(
-                component_array.data_count,
-                entity_id,
-            );
-            component_array.entity_to_data.putAssumeCapacity(
-                entity_id,
-                component_array.data_count,
-            );
-            component_array.data_count += 1;
-        }
-
-        pub fn remove(
-            component_array: *@This(),
-            entity_id: usize,
-        ) void {
-            const component_index = component_array.entity_to_data
-                .get(entity_id) orelse unreachable;
-            const last_slot_entity_id = component_array.data_to_entity
-                .get(component_array.data_count - 1) orelse unreachable;
-
-            // Overwrite the data
-            component_array.data[component_index] =
-                component_array.data[component_array.data_count - 1];
-            component_array.entity_to_data.putAssumeCapacity(last_slot_entity_id, component_index);
-            component_array.data_to_entity.putAssumeCapacity(component_index, last_slot_entity_id);
-            component_array.data_count -= 1;
-        }
-
-        pub fn reset(component_array: *@This()) void {
-            component_array.entity_to_data.clearRetainingCapacity();
-            component_array.data_to_entity.clearRetainingCapacity();
-            component_array.data_count = 0;
-        }
-    };
-}
 
 inline fn vector2DistanceU16(v1: @Vector(2, u16), v2: @Vector(2, u16)) f32 {
     const result = @sqrt(@as(f32, @floatFromInt((v1[0] - v2[0]) * (v1[0] - v2[0]) + (v1[1] - v2[1]) * (v1[1] - v2[1]))));
@@ -553,7 +277,7 @@ fn drawTileFromCoords(
     // }
 }
 
-inline fn sumOfInventory(ica: *ComponentArray(Inventory), ica_index: usize) usize {
+inline fn sumOfInventory(ica: *ecs.ComponentArray(Inventory), ica_index: usize) usize {
     var result: usize = 0;
     result += ica.data[ica_index].rock_count;
     result += ica.data[ica_index].stick_count;
@@ -611,9 +335,9 @@ fn genWorld(
     rng: Random,
     tileset: *const Tileset,
     world: *World,
-    entity_man: *EntityManager,
-    tile_p_components: *ComponentArray(@Vector(2, u16)),
-    resource_kind_components: *ComponentArray(ResourceKind),
+    entity_man: *ecs.EntityManager,
+    tile_p_components: *ecs.ComponentArray(@Vector(2, u16)),
+    resource_kind_components: *ecs.ComponentArray(ResourceKind),
 ) !void {
     // Generate a hightmap per region and use it to write sub-region tiles.
     for (0..board_dim * board_dim) |board_index|
@@ -667,6 +391,771 @@ fn genWorld(
     }
 }
 
-export fn smallPlanetGameCode() void {
-    std.debug.print("Test hot code reloading #4\n", .{});
+const WorkerState = enum(u8) {
+    pathing_to_target,
+    choose_new_target,
+    idle,
+};
+
+const Inventory = packed struct {
+    rock_count: u16 = 0,
+    stick_count: u16 = 0,
+    berry_count: u16 = 0,
+};
+
+const ResourceKind = enum(usize) {
+    rock,
+    stick,
+    tree,
+    berry,
+};
+
+export fn smallPlanetGameCode(game_state: *platform.GameState) void {
+    var entity_man: *ecs.EntityManager = undefined;
+    var tile_p_components: *ecs.ComponentArray(@Vector(2, u16)) = undefined;
+    var target_tile_p_components: *ecs.ComponentArray(@Vector(2, u16)) = undefined;
+    var resource_kind_components: *ecs.ComponentArray(ResourceKind) = undefined;
+    var inventory_components: *ecs.ComponentArray(Inventory) = undefined;
+    var worker_state_components: *ecs.ComponentArray(WorkerState) = undefined;
+    var tileset: *Tileset = undefined;
+    var world: *World = undefined;
+
+    const perm_ally = game_state.perm_fba.allocator();
+    const scratch_ally = game_state.scratch_fba.allocator();
+
+    if (!game_state.did_init) {
+        // ECS setup
+        const max_entity_count = 2000;
+        game_state.entity_man_offset = game_state.perm_fba.end_index;
+        entity_man = perm_ally.create(ecs.EntityManager) catch unreachable;
+        entity_man.* = ecs.EntityManager.init(perm_ally, max_entity_count) catch unreachable;
+
+        game_state.tile_p_components_offset = game_state.perm_fba.end_index;
+        tile_p_components = perm_ally.create(ecs.ComponentArray(@Vector(2, u16))) catch unreachable;
+        tile_p_components.* =
+            ecs.ComponentArray(@Vector(2, u16)).init(perm_ally, max_entity_count) catch unreachable;
+
+        game_state.target_tile_p_components_offset = game_state.perm_fba.end_index;
+        target_tile_p_components = perm_ally.create(ecs.ComponentArray(@Vector(2, u16))) catch unreachable;
+        target_tile_p_components.* =
+            ecs.ComponentArray(@Vector(2, u16)).init(perm_ally, max_entity_count) catch unreachable;
+
+        game_state.resource_kind_components_offset = game_state.perm_fba.end_index;
+        resource_kind_components = perm_ally.create(ecs.ComponentArray(ResourceKind)) catch unreachable;
+        resource_kind_components.* =
+            ecs.ComponentArray(ResourceKind).init(perm_ally, max_entity_count) catch unreachable;
+
+        game_state.inventory_components_offset = game_state.perm_fba.end_index;
+        inventory_components = perm_ally.create(ecs.ComponentArray(Inventory)) catch unreachable;
+        inventory_components.* =
+            ecs.ComponentArray(Inventory).init(perm_ally, max_entity_count) catch unreachable;
+
+        game_state.worker_state_components_offset = game_state.perm_fba.end_index;
+        worker_state_components = perm_ally.create(ecs.ComponentArray(WorkerState)) catch unreachable;
+        worker_state_components.* =
+            ecs.ComponentArray(WorkerState).init(perm_ally, max_entity_count) catch unreachable;
+
+        // Load tileset
+
+        game_state.tileset_offset = game_state.perm_fba.end_index;
+        tileset = perm_ally.create(Tileset) catch unreachable;
+        tileset.* = Tileset.init(&game_state.perm_fba, &game_state.scratch_fba, "./assets/art/small-planet.tsj") catch unreachable;
+
+        game_state.world_offset = game_state.perm_fba.end_index;
+        world = perm_ally.create(World) catch unreachable;
+        world.* = World{
+            .region_data = perm_ally.alloc(
+                RegionData,
+                board_dim * board_dim,
+            ) catch unreachable,
+            .height_map = perm_ally.alloc(
+                i16,
+                board_dim * board_dim,
+            ) catch unreachable,
+        };
+
+        game_state.seed = 116; // NOTE(caleb): Happens to be a good seed. Nothing special otherwise.
+        game_state.xoshiro_256 = rand.DefaultPrng.init(game_state.seed);
+
+        genWorld(
+            game_state.xoshiro_256.random(),
+            tileset,
+            world,
+            entity_man,
+            tile_p_components,
+            resource_kind_components,
+        ) catch unreachable;
+
+        game_state.sample_walk_map = perm_ally.alloc(usize, board_dim * board_dim) catch unreachable;
+        for (game_state.sample_walk_map) |*distance|
+            distance.* = math.maxInt(usize);
+
+        game_state.game_time_minute = 0;
+        game_state.game_time_hour = 0;
+        game_state.game_time_day = 0;
+        game_state.game_time_year = 0;
+
+        game_state.tick_granularity = @intFromEnum(TickGranularity.minute);
+
+        game_state.debug_draw_distance_map = false;
+        game_state.debug_draw_grid_lines = false;
+
+        game_state.is_paused = false;
+        game_state.pause_start_time = 0.0;
+        game_state.last_tick_time = 0;
+
+        game_state.view_mode = @intFromEnum(ViewMode.world);
+        game_state.selected_tile_p = @Vector(2, i8){ -1, -1 };
+        game_state.selected_region_p = @Vector(2, u8){ 0, 0 };
+
+        game_state.height_scale = 1.0;
+        game_state.scale_factor = 2.0;
+
+        game_state.board_translation = rl.Vector2{ .x = 0, .y = 0 };
+
+        game_state.draw_rot_state = @intFromEnum(DrawRotState.rotate_nonce);
+
+        game_state.rl_font = rl.GetFontDefault();
+
+        game_state.did_init = true;
+    }
+
+    entity_man =
+        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.entity_man_offset));
+    tile_p_components =
+        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.tile_p_components_offset));
+    target_tile_p_components =
+        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.target_tile_p_components_offset));
+    resource_kind_components =
+        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.resource_kind_components_offset));
+    inventory_components =
+        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.inventory_components_offset));
+    tileset =
+        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.tileset_offset));
+    world =
+        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.world_offset));
+
+    var tick_granularity: TickGranularity = @enumFromInt(game_state.tick_granularity);
+    var view_mode: ViewMode = @enumFromInt(game_state.view_mode);
+    var draw_rot_state: DrawRotState = @enumFromInt(game_state.draw_rot_state);
+
+    const mouse_wheel_move = rl.GetMouseWheelMove();
+    if (mouse_wheel_move != 0) {
+        game_state.scale_factor += if (mouse_wheel_move == -1) -scale_inc else scale_inc;
+        game_state.scale_factor = clampf32(game_state.scale_factor, 1.0, 10.0);
+    }
+
+    const scaled_tile_dim: rl.Vector2 = .{
+        .x = @as(f32, @floatFromInt(tileset.tile_width)) * game_state.scale_factor,
+        .y = @as(f32, @floatFromInt(tileset.tile_height)) * game_state.scale_factor,
+    };
+
+    const new_mouse_p = rl.GetMousePosition();
+    const mouse_moved = (rl.Vector2Equals(game_state.mouse_p, new_mouse_p) == 0);
+    game_state.mouse_p = new_mouse_p;
+    const deprojected_mouse_p = isoInvert(
+        rl.Vector2Subtract(game_state.mouse_p, .{ .x = scaled_tile_dim.x / 2.0, .y = 0.0 }),
+        @intFromFloat(scaled_tile_dim.x),
+        @intFromFloat(scaled_tile_dim.y),
+        game_state.board_translation,
+    );
+    if (mouse_moved) {
+        game_state.selected_tile_p[0] = @intFromFloat(deprojected_mouse_p.x / scaled_tile_dim.x);
+        game_state.selected_tile_p[1] = @intFromFloat(deprojected_mouse_p.y / scaled_tile_dim.y);
+    }
+
+    if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_RIGHT))
+        game_state.board_translation = rl.Vector2Add(game_state.board_translation, rl.GetMouseDelta());
+
+    var key_pressed = rl.GetKeyPressed();
+    while (key_pressed != 0) {
+        if (key_pressed == rl.KEY_R and rl.IsKeyDown(rl.KEY_LEFT_SHIFT)) {
+            draw_rot_state =
+                @enumFromInt(@mod(@as(i8, @intCast(game_state.draw_rot_state)) - 1, @intFromEnum(DrawRotState.count)));
+            game_state.draw_rot_state = @intFromEnum(draw_rot_state);
+        } else if (key_pressed == rl.KEY_R) {
+            draw_rot_state =
+                @enumFromInt((game_state.draw_rot_state + 1) % @intFromEnum(DrawRotState.count));
+            game_state.draw_rot_state = @intFromEnum(draw_rot_state);
+        } else if (key_pressed == rl.KEY_H) {
+            game_state.height_scale = if (game_state.height_scale == 1.0) 0.0 else 1.0;
+        } else if (key_pressed == rl.KEY_KP_6 or key_pressed == rl.KEY_KP_4) {
+            if (key_pressed == rl.KEY_KP_6) {
+                game_state.seed += 1;
+            } else if (key_pressed == rl.KEY_KP_4 and game_state.seed > 0)
+                game_state.seed -= 1;
+            std.debug.print("{d}\n", .{game_state.seed});
+            game_state.xoshiro_256 = rand.DefaultPrng.init(game_state.seed);
+
+            while (entity_man.free_entities.capacity != entity_man.free_entities.items.len)
+                entity_man.free_entities.insertAssumeCapacity(entity_man.free_entities.items.len, entity_man.free_entities.items.len);
+
+            tile_p_components.reset();
+            resource_kind_components.reset();
+
+            genWorld(
+                game_state.xoshiro_256.random(),
+                tileset,
+                world,
+                entity_man,
+                tile_p_components,
+                resource_kind_components,
+            ) catch unreachable;
+        } else if (key_pressed == rl.KEY_UP) {
+            tick_granularity =
+                @enumFromInt((game_state.tick_granularity + 1) % @intFromEnum(TickGranularity.count));
+            game_state.tick_granularity = @intFromEnum(tick_granularity);
+            game_state.selected_tile_p[1] -= 1;
+        } else if (key_pressed == rl.KEY_DOWN) {
+            game_state.selected_tile_p[1] += 1;
+        } else if (key_pressed == rl.KEY_LEFT) {
+            game_state.selected_tile_p[0] -= 1;
+        } else if (key_pressed == rl.KEY_RIGHT) {
+            game_state.selected_tile_p[0] += 1;
+        } else if (key_pressed == rl.KEY_F1) {
+            game_state.debug_draw_distance_map = !game_state.debug_draw_distance_map;
+        } else if (key_pressed == rl.KEY_F2) {
+            game_state.debug_draw_grid_lines = !game_state.debug_draw_grid_lines;
+        } else if (key_pressed == rl.KEY_E) {
+            view_mode = .world;
+            game_state.view_mode = @intFromEnum(view_mode);
+        } else if (key_pressed == rl.KEY_ENTER and view_mode == .world) {
+            // Check for a valid world_tile_p
+            const zero_vec: @Vector(2, i8) = @splat(0);
+            const dim_vec: @Vector(2, i8) = @splat(board_dim);
+            if (@reduce(.And, game_state.selected_tile_p >= zero_vec) and @reduce(.And, game_state.selected_tile_p < dim_vec)) {
+                view_mode = .region;
+                game_state.view_mode = @intFromEnum(view_mode);
+                game_state.selected_region_p = @intCast(game_state.selected_tile_p);
+            }
+        } else if (key_pressed == rl.KEY_SPACE) {
+            game_state.is_paused = !game_state.is_paused;
+            if (game_state.is_paused) { // NOTE(caleb): Record amount of time spent paused.
+                game_state.pause_start_time = rl.GetTime();
+            } else game_state.last_tick_time += rl.GetTime() - game_state.pause_start_time;
+        }
+        key_pressed = rl.GetKeyPressed();
+    }
+
+    if (!game_state.is_paused and rl.GetTime() - game_state.last_tick_time >= tick_rate_sec) {
+        for (0..worker_state_components.data_count) |wsc_index| {
+            const worker_state = worker_state_components.data[wsc_index];
+            const worker_entity_id = worker_state_components.data_to_entity
+                .get(wsc_index) orelse unreachable;
+            const worker_tile_p_index = tile_p_components.entity_to_data
+                .get(worker_entity_id) orelse unreachable;
+            const worker_target_tile_p_index = target_tile_p_components.entity_to_data
+                .get(worker_entity_id) orelse unreachable;
+            const worker_inventory_index = inventory_components.entity_to_data
+                .get(worker_entity_id) orelse unreachable;
+            switch (worker_state) {
+                .choose_new_target => {
+                    if (sumOfInventory(inventory_components, worker_inventory_index) > 0) {
+                        for (0..inventory_components.data_count) |ic_index| {
+                            const entity_id = inventory_components.data_to_entity
+                                .get(ic_index) orelse unreachable;
+                            if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.pile))) { // Filter for piles
+                                const storage_tile_p_index = tile_p_components.entity_to_data
+                                    .get(entity_id) orelse unreachable;
+                                if (@reduce(.And, tile_p_components.data[worker_tile_p_index] ==
+                                    tile_p_components.data[storage_tile_p_index]))
+                                {
+                                    inventory_components.data[ic_index].rock_count +=
+                                        inventory_components.data[worker_inventory_index].rock_count;
+                                    inventory_components.data[ic_index].stick_count +=
+                                        inventory_components.data[worker_inventory_index].stick_count;
+                                    inventory_components.data[ic_index].berry_count +=
+                                        inventory_components.data[worker_inventory_index].berry_count;
+                                    inventory_components.data[worker_inventory_index] = .{};
+                                }
+                            }
+                        }
+                    }
+
+                    var resources_on_board = if (resource_kind_components.data_count > 0) true else false;
+                    var piles_on_board = false;
+                    for (0..inventory_components.data_count) |ic_index| {
+                        const entity_id = inventory_components.data_to_entity
+                            .get(ic_index) orelse unreachable;
+                        if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.pile))) {
+                            piles_on_board = true;
+                            break;
+                        }
+                    }
+
+                    if ((piles_on_board and sumOfInventory(inventory_components, worker_inventory_index) >= worker_carry_cap) or
+                        (piles_on_board and sumOfInventory(inventory_components, worker_inventory_index) > 0 and !resources_on_board))
+                    {
+                        var closest_pile_d: f32 = math.floatMax(f32);
+                        for (0..inventory_components.data_count) |ic_index| {
+                            const entity_id = inventory_components.data_to_entity
+                                .get(ic_index) orelse unreachable;
+                            if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.pile))) { // Filter for piles
+                                const storage_tile_p_index =
+                                    tile_p_components.entity_to_data.get(entity_id) orelse unreachable;
+                                const storage_tile_p = tile_p_components.data[storage_tile_p_index];
+                                if (vector2DistanceU16(tile_p_components.data[worker_tile_p_index], storage_tile_p) < closest_pile_d) {
+                                    closest_pile_d = vector2DistanceU16(tile_p_components.data[worker_tile_p_index], storage_tile_p);
+                                    target_tile_p_components.data[worker_target_tile_p_index] = storage_tile_p;
+                                }
+                            }
+                        }
+                        worker_state_components.data[wsc_index] = .pathing_to_target;
+                    } else if (resources_on_board and
+                        (sumOfInventory(inventory_components, worker_inventory_index) < worker_carry_cap))
+                    {
+                        var closest_resource_d: f32 = math.floatMax(f32);
+                        for (0..resource_kind_components.data_count) |rk_component_index| {
+                            const entity_id = resource_kind_components.data_to_entity
+                                .get(rk_component_index) orelse unreachable;
+                            const tile_p_index = tile_p_components.entity_to_data
+                                .get(entity_id) orelse unreachable;
+                            const tile_p = tile_p_components.data[tile_p_index];
+
+                            if (vector2DistanceU16(tile_p_components.data[worker_tile_p_index], tile_p) < closest_resource_d) {
+                                closest_resource_d = vector2DistanceU16(
+                                    tile_p_components.data[worker_tile_p_index],
+                                    tile_p,
+                                );
+                                target_tile_p_components.data[worker_target_tile_p_index] = tile_p;
+                            }
+                        }
+                        worker_state_components.data[wsc_index] = .pathing_to_target;
+                    } else worker_state_components.data[wsc_index] = .idle;
+                },
+                .pathing_to_target => {
+                    swpUpdateMap(
+                        &game_state.perm_fba,
+                        game_state.sample_walk_map,
+                        target_tile_p_components.data[worker_target_tile_p_index][1],
+                    ) catch unreachable;
+
+                    // Have worker navigate to rock
+                    var next_worker_tile_p: @Vector(2, u16) = undefined;
+                    var closest_tile_distance: usize = math.maxInt(usize);
+
+                    const region_tile_index = tile_p_components.data[worker_tile_p_index][1];
+                    const region_tile_row = @divTrunc(region_tile_index, board_dim);
+                    const region_tile_col = region_tile_index % board_dim;
+                    for (&[_]@Vector(2, i8){
+                        @Vector(2, i8){ 0, -1 },
+                        @Vector(2, i8){ 0, 1 },
+                        @Vector(2, i8){ 1, 0 },
+                        @Vector(2, i8){ -1, 0 },
+                    }) |d_tile_coords| {
+                        const neighbor_tile_p = @Vector(2, i8){
+                            @intCast(region_tile_col),
+                            @intCast(region_tile_row),
+                        } + d_tile_coords;
+                        if (!(neighbor_tile_p[1] >= board_dim or
+                            neighbor_tile_p[1] < 0 or
+                            neighbor_tile_p[0] >= board_dim or
+                            neighbor_tile_p[0] < 0))
+                        {
+                            if (game_state.sample_walk_map[@intCast(neighbor_tile_p[1] * board_dim + neighbor_tile_p[0])] < closest_tile_distance) {
+                                closest_tile_distance = game_state.sample_walk_map[@intCast(neighbor_tile_p[1] * board_dim + neighbor_tile_p[0])];
+                                next_worker_tile_p = @Vector(2, u16){ 0, @intCast(neighbor_tile_p[1] * board_dim + neighbor_tile_p[0]) }; // FIXME(caleb): WORLD INDEX
+                            }
+                        }
+                    }
+                    tile_p_components.data[worker_tile_p_index] = next_worker_tile_p;
+                    if (@reduce(.And, tile_p_components.data[worker_tile_p_index] == target_tile_p_components.data[worker_target_tile_p_index])) {
+                        for (0..tile_p_components.data_count) |tp_component_index| {
+                            if (@reduce(.And, tile_p_components.data[worker_tile_p_index] == tile_p_components.data[tp_component_index])) {
+                                const entity_id = tile_p_components.data_to_entity
+                                    .get(tp_component_index) orelse unreachable;
+                                if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.resource))) {
+                                    const rkc_index = resource_kind_components.entity_to_data
+                                        .get(entity_id) orelse unreachable;
+                                    switch (resource_kind_components.data[rkc_index]) {
+                                        .rock => inventory_components.data[worker_inventory_index].rock_count += 1,
+                                        .stick => inventory_components.data[worker_inventory_index].stick_count += 1,
+                                        .berry => inventory_components.data[worker_inventory_index].berry_count += 1,
+                                        .tree => unreachable, // TODO(caleb): Handle me
+                                    }
+                                    resource_kind_components.remove(entity_id);
+                                    tile_p_components.remove(entity_id);
+                                    entity_man.release(entity_id);
+                                    break;
+                                }
+                            }
+                        }
+                        worker_state_components.data[wsc_index] = .choose_new_target;
+                    }
+                },
+                .idle => {},
+            }
+        }
+
+        switch (tick_granularity) {
+            .minute => {
+                game_state.game_time_minute += 1;
+            },
+            .hour => {
+                game_state.game_time_hour += 1;
+            },
+            .day => {
+                game_state.game_time_day += 1;
+            },
+            .year => {
+                game_state.game_time_year += 1;
+            },
+            else => unreachable,
+        }
+
+        if (game_state.game_time_minute >= 60) {
+            game_state.game_time_minute = 0;
+            game_state.game_time_hour += 1;
+        }
+
+        if (game_state.game_time_hour >= 24) {
+            game_state.game_time_hour = 0;
+            game_state.game_time_day += 1;
+        }
+
+        if (game_state.game_time_day >= 365) {
+            game_state.game_time_day = 0;
+            game_state.game_time_year += 1;
+        }
+
+        game_state.last_tick_time = rl.GetTime();
+    }
+
+    rl.BeginDrawing();
+    rl.ClearBackground(.{ .r = 0, .g = 0, .b = 0, .a = 255 });
+
+    // Draw board
+    switch (view_mode) {
+        .world => {
+            switch (draw_rot_state) {
+                .rotate_nonce => {
+                    for (0..board_dim) |source_row_index| {
+                        for (0..board_dim) |source_col_index| {
+                            drawTileFromCoords(world, tileset, source_row_index, source_col_index, source_row_index, source_col_index, scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                        }
+                    }
+                },
+                .rotate_once => {
+                    var dest_tile_coords = @Vector(2, usize){ 0, 0 };
+                    for (0..board_dim) |source_col_index| {
+                        var source_row_index: isize = board_dim - 1;
+                        while (source_row_index >= 0) : (source_row_index -= 1) {
+                            drawTileFromCoords(world, tileset, @intCast(source_row_index), source_col_index, dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            dest_tile_coords[0] += 1; // Increment col
+                        }
+                        dest_tile_coords[1] += 1; // Increment row
+                        dest_tile_coords[0] = 0; // Reset col
+                    }
+                },
+                .rotate_twice => {
+                    var dest_tile_coords = @Vector(2, usize){ 0, 0 };
+                    var source_row_index: isize = board_dim - 1;
+                    while (source_row_index >= 0) : (source_row_index -= 1) {
+                        var source_col_index: isize = board_dim - 1;
+                        while (source_col_index >= 0) : (source_col_index -= 1) {
+                            drawTileFromCoords(world, tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            dest_tile_coords[0] += 1; // Increment col
+                        }
+                        dest_tile_coords[1] += 1; // Increment row
+                        dest_tile_coords[0] = 0; // Reset col
+                    }
+                },
+                .rotate_thrice => {
+                    var dest_tile_coords = @Vector(2, usize){ 0, 0 };
+                    var source_col_index: isize = board_dim - 1;
+                    while (source_col_index >= 0) : (source_col_index -= 1) {
+                        for (0..board_dim) |source_row_index| {
+                            drawTileFromCoords(world, tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            dest_tile_coords[0] += 1; // Increment col
+                        }
+                        dest_tile_coords[1] += 1; // Increment row
+                        dest_tile_coords[0] = 0; // Reset col
+                    }
+                },
+                else => unreachable,
+            }
+        },
+        .region => {
+            for (0..board_dim) |region_row_index| {
+                for (0..board_dim) |region_col_index| {
+                    const tile_id = world.region_data[
+                        @as(usize, @intCast(game_state.selected_region_p[1])) *
+                            board_dim + @as(usize, @intCast(game_state.selected_region_p[0]))
+                    ].tiles[region_row_index * board_dim + region_col_index];
+                    var dest_pos = isoProj(
+                        .{
+                            .x = @as(f32, @floatFromInt(region_col_index)) * scaled_tile_dim.x,
+                            .y = @as(f32, @floatFromInt(region_row_index)) * scaled_tile_dim.y,
+                        },
+                        @intFromFloat(scaled_tile_dim.x),
+                        @intFromFloat(scaled_tile_dim.y),
+                        game_state.board_translation,
+                    );
+
+                    // Shift selected tile up
+                    if (game_state.selected_tile_p[0] == @as(i32, @intCast(region_col_index)) and
+                        game_state.selected_tile_p[1] == @as(i32, @intCast(region_row_index)))
+                        dest_pos.y -= (scaled_tile_dim.y / 2.0) * 0.25;
+
+                    drawTile(tileset, tile_id, dest_pos, game_state.scale_factor, rl.WHITE);
+                }
+            }
+        },
+    }
+
+    if (game_state.debug_draw_grid_lines) {
+        // NOTE(caleb): + 1 for outer grid lines
+        for (0..board_dim + 1) |grid_row| {
+            const start_p = isoProj(
+                .{
+                    .x = 0,
+                    .y = @as(f32, @floatFromInt(grid_row)),
+                },
+                @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * game_state.scale_factor),
+                @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * game_state.scale_factor),
+                game_state.board_translation,
+            );
+            const end_p = isoProj(
+                .{
+                    .x = board_dim,
+                    .y = @as(f32, @floatFromInt(grid_row)),
+                },
+                @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * game_state.scale_factor),
+                @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * game_state.scale_factor),
+                game_state.board_translation,
+            );
+            rl.DrawLineEx(start_p, end_p, 1, rl.RED);
+        }
+        for (0..board_dim + 1) |grid_col| {
+            const start_p = isoProj(
+                .{
+                    .x = @floatFromInt(grid_col),
+                    .y = 0.0,
+                },
+                @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * game_state.scale_factor),
+                @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * game_state.scale_factor),
+                game_state.board_translation,
+            );
+            const end_p = isoProj(
+                .{
+                    .x = @as(f32, @floatFromInt(grid_col)),
+                    .y = @as(f32, @floatFromInt(board_dim)),
+                },
+                @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * game_state.scale_factor),
+                @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * game_state.scale_factor),
+                game_state.board_translation,
+            );
+            rl.DrawLineEx(start_p, end_p, 1, rl.RED);
+        }
+    }
+
+    // Draw distance map
+    if (game_state.debug_draw_distance_map) {
+        for (0..1) |wsc_index| { // NOTE(caleb): Make multi maps look ok??
+            const worker_id =
+                worker_state_components.data_to_entity.get(wsc_index) orelse unreachable;
+            const worker_target_tile_p_index = target_tile_p_components.entity_to_data
+                .get(worker_id) orelse unreachable;
+            swpUpdateMap(
+                &game_state.scratch_fba,
+                game_state.sample_walk_map,
+                target_tile_p_components.data[worker_target_tile_p_index][1],
+            ) catch unreachable;
+
+            for (0..board_dim) |grid_row_index| {
+                for (0..board_dim) |grid_col_index| {
+                    if (game_state.sample_walk_map[grid_row_index * board_dim + grid_col_index] < 10) {
+                        const tile_distance =
+                            game_state.sample_walk_map[grid_row_index * board_dim + grid_col_index];
+
+                        const is_selected_tile = (game_state.selected_tile_p[0] == @as(i32, @intCast(grid_col_index)) and
+                            game_state.selected_tile_p[1] == @as(i32, @intCast(grid_row_index)));
+
+                        const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
+                        var projected_p = isoProjGlyph(
+                            .{
+                                .x = @as(f32, @floatFromInt(grid_col_index)),
+                                .y = @as(f32, @floatFromInt(grid_row_index)),
+                            },
+                            @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * game_state.scale_factor),
+                            @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * game_state.scale_factor),
+                            game_state.board_translation,
+                        );
+                        projected_p.y += y_offset;
+                        rl.DrawTextCodepoint(
+                            game_state.rl_font,
+                            @intCast(tile_distance + '0'),
+                            projected_p,
+                            glyph_size,
+                            .{ .r = 200, .g = 200, .b = 200, .a = 255 },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    if (false) {
+        // Draw entities w/ tile p component NOTE(caleb): This breaks draw order
+        for (0..tile_p_components.data_count) |tpc_index| {
+            const is_selected_tile = false; // FIXME(Caleb)
+
+            const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
+            var projected_p = isoProjGlyph(
+                tile_p_components.data[tpc_index],
+                @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * game_state.scale_factor),
+                @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * game_state.scale_factor),
+                game_state.board_translation,
+            );
+            projected_p.y += y_offset;
+
+            const entity_id = tile_p_components.data_to_entity.get(tpc_index) orelse unreachable;
+            if (entity_man.hasComponent(entity_id, .inventory) and !entity_man.hasComponent(entity_id, .worker_state)) {
+                rl.DrawTextCodepoint(
+                    game_state.rl_font,
+                    @intCast('p'),
+                    projected_p,
+                    glyph_size,
+                    if (is_selected_tile) rl.YELLOW else .{ .r = 200, .g = 200, .b = 0, .a = 255 },
+                );
+            } else if (entity_man.hasComponent(entity_id, .resource_kind)) {
+                const resource_kind_index = resource_kind_components.entity_to_data
+                    .get(entity_id) orelse unreachable;
+                switch (resource_kind_components.data[resource_kind_index]) {
+                    .rock => {
+                        rl.DrawTextCodepoint(
+                            game_state.rl_font,
+                            @intCast('r'),
+                            projected_p,
+                            glyph_size,
+                            if (is_selected_tile) rl.WHITE else .{ .r = 200, .g = 200, .b = 200, .a = 255 },
+                        );
+                    },
+                    .stick => {
+                        rl.DrawTextCodepoint(
+                            game_state.rl_font,
+                            @intCast('s'),
+                            projected_p,
+                            glyph_size,
+                            if (is_selected_tile) rl.WHITE else .{ .r = 200, .g = 200, .b = 200, .a = 255 },
+                        );
+                    },
+                    .berry => {
+                        rl.DrawTextCodepoint(
+                            game_state.rl_font,
+                            @intCast('b'),
+                            projected_p,
+                            glyph_size,
+                            if (is_selected_tile) rl.WHITE else .{ .r = 200, .g = 200, .b = 200, .a = 255 },
+                        );
+                    },
+                }
+            } else if (entity_man.hasComponent(entity_id, .worker_state)) {} // Drawn seperately
+            else unreachable;
+        }
+
+        // HACK(caleb): draw workers seperately.
+        for (0..worker_state_components.data_count) |wsc_index| {
+            const worker_entity_id =
+                worker_state_components.data_to_entity.get(wsc_index) orelse unreachable;
+            const worker_tile_p_index =
+                tile_p_components.entity_to_data.get(worker_entity_id) orelse unreachable;
+            const is_selected_tile = false; // FIXME
+            const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
+            var projected_p = isoProjGlyph(
+                tile_p_components.data[worker_tile_p_index],
+                @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * game_state.scale_factor),
+                @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * game_state.scale_factor),
+                game_state.board_translation,
+            );
+            projected_p.y += y_offset;
+            rl.DrawTextCodepoint(game_state.rl_font, @intCast('@'), projected_p, glyph_size, rl.ORANGE);
+        }
+    }
+
+    // Info about selected tile
+    {
+        var offset_y: f32 = 0.0;
+        for (0..tile_p_components.data_count) |tpc_index| {
+            if (false) { //FIXME) {
+                const restore_end_index = game_state.scratch_fba.end_index;
+                defer game_state.scratch_fba.end_index = restore_end_index;
+
+                const entity_id = tile_p_components.data_to_entity
+                    .get(tpc_index) orelse unreachable;
+
+                var infoz: [:0]const u8 = undefined;
+                if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.worker))) {
+                    infoz = fmt.allocPrintZ(
+                        scratch_ally,
+                        "WORKER",
+                        .{},
+                    ) catch unreachable;
+                } else if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.pile))) {
+                    infoz = fmt.allocPrintZ(
+                        scratch_ally,
+                        "PILE",
+                        .{},
+                    ) catch unreachable;
+                } else if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.resource))) {
+                    infoz = fmt.allocPrintZ(
+                        scratch_ally,
+                        "RESOURCE",
+                        .{},
+                    ) catch unreachable;
+                }
+                rl.DrawTextEx(game_state.rl_font, infoz, .{
+                    .x = 0.0,
+                    .y = @as(f32, @floatFromInt(rl.GetScreenHeight() - @divFloor(
+                        rl.GetScreenHeight(),
+                        5,
+                    ))) + offset_y,
+                }, glyph_size, 1.0, rl.WHITE);
+                offset_y += 40.0;
+            }
+        }
+    }
+
+    // Pause text
+    if (game_state.is_paused) {
+        const paused_width = rl.MeasureText("PAUSED", glyph_size * 2);
+        rl.DrawTextEx(game_state.rl_font, "PAUSED", .{
+            .x = @floatFromInt(@divFloor(rl.GetScreenWidth(), 2) - @divFloor(paused_width, 2)),
+            .y = @floatFromInt(rl.GetScreenHeight() - @divFloor(rl.GetScreenHeight(), 5)),
+        }, glyph_size * 2, 1.0, rl.WHITE);
+    }
+
+    // Debug info
+    {
+        const restore_end_index = game_state.scratch_fba.end_index;
+        defer game_state.scratch_fba.end_index = restore_end_index;
+
+        const game_timez = fmt.allocPrintZ(
+            scratch_ally,
+            "Time: {d}::{d}::{d}::{d}",
+            .{ game_state.game_time_year, game_state.game_time_day, game_state.game_time_hour, game_state.game_time_minute },
+        ) catch unreachable;
+        const entity_countz = fmt.allocPrintZ(
+            scratch_ally,
+            "Entity count: {d}",
+            .{entity_man.free_entities.capacity - entity_man.free_entities.items.len},
+        ) catch unreachable;
+        const resource_countz = fmt.allocPrintZ(
+            scratch_ally,
+            "Resource count: {d}",
+            .{resource_kind_components.data_count},
+        ) catch unreachable;
+        for (&[_][:0]const u8{
+            game_timez,
+            resource_countz,
+            entity_countz,
+        }, 0..) |strz, strz_index| {
+            rl.DrawTextEx(game_state.rl_font, strz, .{
+                .x = 0, //@as(f32, @floatFromInt(board_dim)) * tile_width_px,
+                .y = @as(f32, @floatFromInt(strz_index)) * 40,
+            }, glyph_size, 1.0, rl.WHITE);
+        }
+    }
+
+    rl.EndDrawing();
 }
