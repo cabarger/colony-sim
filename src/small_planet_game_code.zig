@@ -410,7 +410,7 @@ const ResourceKind = enum(usize) {
     berry,
 };
 
-export fn smallPlanetGameCode(game_state: *platform.GameState) void {
+export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *platform.GameState) void {
     var entity_man: *ecs.EntityManager = undefined;
     var tile_p_components: *ecs.ComponentArray(@Vector(2, u16)) = undefined;
     var target_tile_p_components: *ecs.ComponentArray(@Vector(2, u16)) = undefined;
@@ -459,7 +459,7 @@ export fn smallPlanetGameCode(game_state: *platform.GameState) void {
 
         game_state.tileset_offset = game_state.perm_fba.end_index;
         tileset = perm_ally.create(Tileset) catch unreachable;
-        tileset.* = Tileset.init(&game_state.perm_fba, &game_state.scratch_fba, "./assets/art/small-planet.tsj") catch unreachable;
+        tileset.* = Tileset.init(&game_state.perm_fba, &game_state.scratch_fba, "./assets/art/small-planet.tsj", platform_api) catch unreachable;
 
         game_state.world_offset = game_state.perm_fba.end_index;
         world = perm_ally.create(World) catch unreachable;

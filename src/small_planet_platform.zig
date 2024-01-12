@@ -19,6 +19,10 @@ const rand = std.rand;
 
 const FixedBufferAllocator = std.heap.FixedBufferAllocator;
 
+pub const PlatformAPI = struct {
+    loadTexture: *const fn ([:0]const u8) rl.Texture,
+};
+
 // TODO(caleb): Function type for smallPlanetGameCode()
 pub const GameState = struct {
     did_init: bool,

@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const rl = @import("rl.zig");
+const platform = @import("small_planet_platform.zig");
 
 const fs = std.fs;
 
@@ -43,6 +44,7 @@ pub fn init(
     tileset_fba: *FixedBufferAllocator,
     scratch_fba: *FixedBufferAllocator,
     tsj_path: []const u8,
+    platform_api: *platform.PlatformAPI,
 ) !Tileset {
     const tileset_ally = tileset_fba.allocator();
     const scratch_ally = scratch_fba.allocator();
@@ -73,7 +75,7 @@ pub fn init(
     );
 
     var ts = Tileset{
-        .texture = rl.LoadTexture(ts_image_pathz),
+        .texture = platform_api.loadTexture(ts_image_pathz),
         .columns = @intCast(parsed_ts_data.object.get("columns").?.integer),
         .tile_width = @intCast(parsed_ts_data.object.get("tilewidth").?.integer),
         .tile_height = @intCast(parsed_ts_data.object.get("tileheight").?.integer),

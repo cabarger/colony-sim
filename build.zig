@@ -8,6 +8,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
 
     const optimize = b.standardOptimizeOption(.{});
+    const raylib = rl.addRaylib(b, target, optimize, .{});
 
     const build_game_code = b.option(bool, "game-code", "When true builds game code") orelse false;
     if (build_game_code) {
@@ -17,7 +18,6 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
-        const raylib = rl.addRaylib(b, target, optimize, .{});
         game_code.addIncludePath(.{ .path = "raylib/src/" });
         game_code.linkLibrary(raylib);
         b.installArtifact(game_code);
@@ -31,7 +31,6 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
-        const raylib = rl.addRaylib(b, target, optimize, .{});
         platform_code.addIncludePath(.{ .path = "raylib/src/" });
         platform_code.linkLibrary(raylib);
         b.installArtifact(platform_code);
