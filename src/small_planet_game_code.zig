@@ -560,6 +560,8 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
         @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.resource_kind_components_offset));
     inventory_components =
         @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.inventory_components_offset));
+    worker_state_components =
+        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.worker_state_components_offset));
     tileset =
         @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.tileset_offset));
     world =
@@ -756,7 +758,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                 },
                 .pathing_to_target => {
                     swpUpdateMap(
-                        &game_state.perm_fba,
+                        &game_state.scratch_fba,
                         game_state.sample_walk_map,
                         target_tile_p_components.data[worker_target_tile_p_index][1],
                     ) catch unreachable;

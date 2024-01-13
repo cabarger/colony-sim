@@ -39,7 +39,6 @@ fn loadLibrary(scratch_fba: *FixedBufferAllocator, path: []const u8) !LibraryHan
         },
         else => {
             const pathz = try scratch_fba.allocator().dupeZ(u8, path);
-            std.debug.print("{s}\n", .{pathz});
             var result2 = std.c.dlopen(pathz, 0x1);
             if (result2 == null) {
                 std.debug.print("{s}\n", .{dlerror().?});
@@ -51,21 +50,30 @@ fn loadLibrary(scratch_fba: *FixedBufferAllocator, path: []const u8) !LibraryHan
     return result;
 }
 
-fn closeLibrary(library_handle: LibraryHandle) void {
+fn unloadLibrary(library_handle: LibraryHandle) void {
     switch (builtin.os.tag) {
         .windows => std.os.windows.FreeLibrary(library_handle),
-        else => unreachable,
+        else => _ = std.c.dlclose(library_handle),
     }
 }
 
 const LibraryFunction = if (builtin.os.tag == .windows) std.os.windows.FARPROC else *anyopaque;
-fn loadLibraryFunction(library_handle: LibraryHandle, function_name: []const u8) ?LibraryFunction {
-    var result: ?LibraryFunction = null;
+fn loadLibraryFunction(
+    scratch_fba: *FixedBufferAllocator,
+    library_handle: LibraryHandle,
+    function_name: []const u8,
+) !LibraryFunction {
+    const restore_end_index = scratch_fba.end_index;
+    defer scratch_fba.end_index = restore_end_index;
+    var result: LibraryFunction = undefined;
     switch (builtin.os.tag) {
         .windows => {
-            result = std.os.windows.kernel32.GetProcAddress(library_handle, function_name.ptr);
+            result = std.os.windows.kernel32.GetProcAddress(library_handle, function_name.ptr) orelse unreachable;
         },
-        else => unreachable,
+        else => {
+            const function_namez = scratch_fba.allocator().dupeZ(u8, function_name) catch unreachable;
+            result = std.c.dlsym(library_handle, function_namez) orelse unreachable;
+        },
     }
     return result;
 }
@@ -81,6 +89,9 @@ pub fn main() !void {
 
     var scratch_mem = heap.page_allocator.alloc(u8, 1024 * 1024) catch unreachable;
     var scratch_fba = FixedBufferAllocator.init(scratch_mem);
+
+    var platform_mem = heap.page_allocator.alloc(u8, 1024) catch unreachable;
+    var platform_fba = FixedBufferAllocator.init(platform_mem);
 
     var platform_api = platform.PlatformAPI{
         .loadTexture = loadTexture,
@@ -116,14 +127,14 @@ pub fn main() !void {
 
     const rel_lib_path = "./zig-out/lib/";
     const active_game_code_path = try fs.path.join(
-        perm_fba.allocator(),
+        platform_fba.allocator(),
         &[_][]const u8{
             rel_lib_path,
             if (builtin.os.tag == .windows) "active-sp-game-code.dll" else "libactive-sp-game-code.so",
         },
     );
     const game_code_path = try fs.path.join(
-        perm_fba.allocator(),
+        platform_fba.allocator(),
         &[_][]const u8{
             rel_lib_path,
             if (builtin.os.tag == .windows) "sp-game-code.dll" else "libsp-game-code.so",
@@ -134,17 +145,17 @@ pub fn main() !void {
     const lib_dir = try fs.cwd().openDir(rel_lib_path, .{});
     try fs.cwd().copyFile(game_code_path, lib_dir, fs.path.basename(active_game_code_path), .{});
 
-    var game_code_library: LibraryHandle = try loadLibrary(&scratch_fba, active_game_code_path);
-    var game_code_fn_ptr: LibraryFunction = loadLibraryFunction(game_code_library, "smallPlanetGameCode") orelse unreachable;
+    var game_code_library: LibraryHandle = try loadLibrary(&platform_fba, active_game_code_path);
+    var game_code_fn_ptr: LibraryFunction = try loadLibraryFunction(&platform_fba, game_code_library, "smallPlanetGameCode");
     var smallPlanetGameCode: *fn (*platform.PlatformAPI, *platform.GameState) void = @ptrCast(game_code_fn_ptr);
 
     while (!rl.WindowShouldClose()) {
         // Detect new game code lib and load it.
         if ((try std.fs.cwd().statFile(game_code_path)).ctime != game_code_file_ctime) {
-            closeLibrary(game_code_library);
+            unloadLibrary(game_code_library);
             try fs.cwd().copyFile(game_code_path, lib_dir, fs.path.basename(active_game_code_path), .{});
-            game_code_library = try loadLibrary(&scratch_fba, active_game_code_path);
-            game_code_fn_ptr = loadLibraryFunction(game_code_library, "smallPlanetGameCode") orelse unreachable;
+            game_code_library = try loadLibrary(&platform_fba, active_game_code_path);
+            game_code_fn_ptr = try loadLibraryFunction(&platform_fba, game_code_library, "smallPlanetGameCode");
             smallPlanetGameCode = @ptrCast(game_code_fn_ptr);
         }
 
