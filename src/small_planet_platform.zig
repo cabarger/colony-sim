@@ -28,9 +28,18 @@ pub const PlatformAPI = struct {
     isKeyDown: *const fn (c_int) bool,
     getScreenWidth: *const fn () c_int,
     getScreenHeight: *const fn () c_int,
-    vector2Add: *const fn (rl.Vector2, rl.Vector2) rl.Vector2,
-    vector2Subtract: *const fn (rl.Vector2, rl.Vector2) rl.Vector2,
     matrixInvert: *const fn (rl.Matrix) rl.Matrix,
+    drawTexturePro: *const fn (rl.Texture, rl.Rectangle, rl.Rectangle, rl.Vector2, f32, rl.Color) void,
+    getMouseDelta: *const fn () rl.Vector2,
+    getTime: *const fn () f64,
+    getKeyPressed: *const fn () c_int,
+    beginDrawing: *const fn () void,
+    clearBackground: *const fn (rl.Color) void,
+    drawLineEx: *const fn (rl.Vector2, rl.Vector2, f32, rl.Color) void,
+    drawTextCodepoint: *const fn (rl.Font, c_int, rl.Vector2, f32, rl.Color) void,
+    drawTextEx: *const fn (rl.Font, [*:0]const u8, rl.Vector2, f32, f32, rl.Color) void,
+    endDrawing: *const fn () void,
+    measureText: *const fn ([*:0]const u8, c_int) c_int,
 };
 
 // TODO(caleb): Function type for smallPlanetGameCode()

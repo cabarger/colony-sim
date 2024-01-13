@@ -64,10 +64,22 @@ const ViewMode = enum {
 
 fn vector2Subtract(lhs: rl.Vector2, rhs: rl.Vector2) rl.Vector2 {
     return rl.Vector2{
+        .x = lhs.x - rhs.x,
+        .y = lhs.y - rhs.y,
+    };
+}
+
+fn vector2Add(lhs: rl.Vector2, rhs: rl.Vector2) rl.Vector2 {
+    return rl.Vector2{
         .x = lhs.x + rhs.x,
         .y = lhs.y + rhs.y,
-        .z = lhs.z + rhs.z,
     };
+}
+
+fn vector2Equals(lhs: rl.Vector2, rhs: rl.Vector2) c_int {
+    if (lhs.x == rhs.x and lhs.y == rhs.y)
+        return 0;
+    return 1;
 }
 
 inline fn vector2DistanceU16(v1: @Vector(2, u16), v2: @Vector(2, u16)) f32 {
@@ -168,54 +180,58 @@ fn screenSpaceBoardHeight(tile_width_px: u16, tile_height_px: u16) f32 {
     ).y + @as(f32, @floatFromInt(tile_height_px)) / 2.0;
 }
 
-fn boardOffset(tile_width_px: u16, tile_height_px: u16) rl.Vector2 {
-    _ = tile_height_px;
-    _ = tile_width_px;
-    _ = tile_height_px;
-    _ = tile_width_px;
-    return rl.Vector2{ .x = 0.0, .y = 0.0 };
-    // .x = @as(f32, @floatFromInt(platform_api.getScreenWidth())) / 2.0 - @as(f32, @floatFromInt(tile_width_px)) / 2.0,
-    // .y = (@as(f32, @floatFromInt(platform_api.getScreenHeight())) - screenSpaceBoardHeight(tile_width_px, tile_height_px)) / 2.0,
-    // };
+fn boardOffset(
+    platform_api: *platform.PlatformAPI,
+    tile_width_px: u16,
+    tile_height_px: u16,
+) rl.Vector2 {
+    return rl.Vector2{
+        .x = @as(f32, @floatFromInt(platform_api.getScreenWidth())) / 2.0 - @as(f32, @floatFromInt(tile_width_px)) / 2.0,
+        .y = (@as(f32, @floatFromInt(platform_api.getScreenHeight())) - screenSpaceBoardHeight(tile_width_px, tile_height_px)) / 2.0,
+    };
 }
 
 fn isoInvert(
+    platform_api: *platform.PlatformAPI,
     p: rl.Vector2,
     tile_width_px: u16,
     tile_height_px: u16,
     board_translation: rl.Vector2,
 ) rl.Vector2 {
-    const untranslated_p = platform_api.vector2Subtract(p, board_translation);
-    const unshifted_p = platform_api.vector2Subtract(untranslated_p, boardOffset(tile_width_px, tile_height_px));
-    const invert_proj_mat = rl.MatrixInvert(isoProjMatrix());
+    const untranslated_p = vector2Subtract(p, board_translation);
+    const unshifted_p = vector2Subtract(untranslated_p, boardOffset(platform_api, tile_width_px, tile_height_px));
+    const invert_proj_mat = platform_api.matrixInvert(isoProjMatrix());
     return matrixVector2Multiply(invert_proj_mat, unshifted_p);
 }
 
 fn isoProj(
+    platform_api: *platform.PlatformAPI,
     p: rl.Vector2,
     tile_width_px: u16,
     tile_height_px: u16,
     board_translation: rl.Vector2,
 ) rl.Vector2 {
     const projected_p = matrixVector2Multiply(isoProjMatrix(), p);
-    const shifted_p = platform_api.vector2Add(projected_p, boardOffset(tile_width_px, tile_height_px));
-    const translated_p = platform_api.vector2Add(shifted_p, board_translation);
+    const shifted_p = vector2Add(projected_p, boardOffset(platform_api, tile_width_px, tile_height_px));
+    const translated_p = vector2Add(shifted_p, board_translation);
     return translated_p;
 }
 
 fn isoProjGlyph(
+    platform_api: *platform.PlatformAPI,
     p: rl.Vector2,
     tile_width_px: u16,
     tile_height_px: u16,
     board_translation: rl.Vector2,
 ) rl.Vector2 {
-    return platform_api.vector2Add(isoProj(p, tile_width_px, tile_height_px, board_translation), .{
+    return vector2Add(isoProj(platform_api, p, tile_width_px, tile_height_px, board_translation), .{
         .x = glyph_size / 2 + glyph_size / 3,
         .y = 0,
     });
 }
 
 fn drawTile(
+    platform_api: *platform.PlatformAPI,
     tileset: *const Tileset,
     tile_id: u16,
     dest_pos: rl.Vector2,
@@ -238,11 +254,12 @@ fn drawTile(
         .height = @floatFromInt(tileset.tile_height),
     };
 
-    rl.DrawTexturePro(tileset.texture, source_rect, dest_rect, .{ .x = 0, .y = 0 }, 0, tint);
+    platform_api.drawTexturePro(tileset.texture, source_rect, dest_rect, .{ .x = 0, .y = 0 }, 0, tint);
 }
 
 /// NOTE(Caleb): WTF chill with the params.
 fn drawTileFromCoords(
+    platform_api: *platform.PlatformAPI,
     world: *const World,
     tileset: *const Tileset,
     source_row_index: usize,
@@ -258,6 +275,7 @@ fn drawTileFromCoords(
     const tile_id = world.region_data[source_row_index * board_dim + source_col_index]
         .tiles[0];
     var dest_pos = isoProj(
+        platform_api,
         .{
             .x = @as(f32, @floatFromInt(dest_col_index)) * scaled_tile_dim.x,
             .y = @as(f32, @floatFromInt(dest_row_index)) * scaled_tile_dim.y,
@@ -276,10 +294,10 @@ fn drawTileFromCoords(
     if (world.height_map[source_row_index * board_dim + source_col_index] > 0) {
         for (0..@intCast(world.height_map[source_row_index * board_dim + source_col_index])) |_| {
             dest_pos.y -= ((scaled_tile_dim.y / 2.0) * height_scale);
-            drawTile(tileset, tile_id, dest_pos, scale_factor, rl.WHITE);
+            drawTile(platform_api, tileset, tile_id, dest_pos, scale_factor, rl.WHITE);
         }
     } else {
-        drawTile(tileset, tile_id, dest_pos, scale_factor, rl.WHITE);
+        drawTile(platform_api, tileset, tile_id, dest_pos, scale_factor, rl.WHITE);
     }
 
     // NOTE(caleb): I will  want to draw resoruces again soon, just keeping this code around.
@@ -563,10 +581,11 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
     };
 
     const new_mouse_p = platform_api.getMousePosition();
-    const mouse_moved = (rl.Vector2Equals(game_state.mouse_p, new_mouse_p) == 0);
+    const mouse_moved = (vector2Equals(game_state.mouse_p, new_mouse_p) == 0);
     game_state.mouse_p = new_mouse_p;
     const deprojected_mouse_p = isoInvert(
-        platform_api.vector2Subtract(game_state.mouse_p, .{ .x = scaled_tile_dim.x / 2.0, .y = 0.0 }),
+        platform_api,
+        vector2Subtract(game_state.mouse_p, .{ .x = scaled_tile_dim.x / 2.0, .y = 0.0 }),
         @intFromFloat(scaled_tile_dim.x),
         @intFromFloat(scaled_tile_dim.y),
         game_state.board_translation,
@@ -577,9 +596,9 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
     }
 
     if (platform_api.isMouseButtonDown(rl.MOUSE_BUTTON_RIGHT))
-        game_state.board_translation = platform_api.vector2Add(game_state.board_translation, rl.GetMouseDelta());
+        game_state.board_translation = vector2Add(game_state.board_translation, platform_api.getMouseDelta());
 
-    var key_pressed = rl.GetKeyPressed();
+    var key_pressed = platform_api.getKeyPressed();
     while (key_pressed != 0) {
         if (key_pressed == rl.KEY_R and platform_api.isKeyDown(rl.KEY_LEFT_SHIFT)) {
             draw_rot_state =
@@ -643,13 +662,13 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
         } else if (key_pressed == rl.KEY_SPACE) {
             game_state.is_paused = !game_state.is_paused;
             if (game_state.is_paused) { // NOTE(caleb): Record amount of time spent paused.
-                game_state.pause_start_time = rl.GetTime();
-            } else game_state.last_tick_time += rl.GetTime() - game_state.pause_start_time;
+                game_state.pause_start_time = platform_api.getTime();
+            } else game_state.last_tick_time += platform_api.getTime() - game_state.pause_start_time;
         }
-        key_pressed = rl.GetKeyPressed();
+        key_pressed = platform_api.getKeyPressed();
     }
 
-    if (!game_state.is_paused and rl.GetTime() - game_state.last_tick_time >= tick_rate_sec) {
+    if (!game_state.is_paused and platform_api.getTime() - game_state.last_tick_time >= tick_rate_sec) {
         for (0..worker_state_components.data_count) |wsc_index| {
             const worker_state = worker_state_components.data[wsc_index];
             const worker_entity_id = worker_state_components.data_to_entity
@@ -830,11 +849,11 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
             game_state.game_time_year += 1;
         }
 
-        game_state.last_tick_time = rl.GetTime();
+        game_state.last_tick_time = platform_api.getTime();
     }
 
-    rl.BeginDrawing();
-    rl.ClearBackground(.{ .r = 0, .g = 0, .b = 0, .a = 255 });
+    platform_api.beginDrawing();
+    platform_api.clearBackground(.{ .r = 0, .g = 0, .b = 0, .a = 255 });
 
     // Draw board
     switch (view_mode) {
@@ -843,7 +862,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                 .rotate_nonce => {
                     for (0..board_dim) |source_row_index| {
                         for (0..board_dim) |source_col_index| {
-                            drawTileFromCoords(world, tileset, source_row_index, source_col_index, source_row_index, source_col_index, scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            drawTileFromCoords(platform_api, world, tileset, source_row_index, source_col_index, source_row_index, source_col_index, scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
                         }
                     }
                 },
@@ -852,7 +871,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                     for (0..board_dim) |source_col_index| {
                         var source_row_index: isize = board_dim - 1;
                         while (source_row_index >= 0) : (source_row_index -= 1) {
-                            drawTileFromCoords(world, tileset, @intCast(source_row_index), source_col_index, dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            drawTileFromCoords(platform_api, world, tileset, @intCast(source_row_index), source_col_index, dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
                             dest_tile_coords[0] += 1; // Increment col
                         }
                         dest_tile_coords[1] += 1; // Increment row
@@ -865,7 +884,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                     while (source_row_index >= 0) : (source_row_index -= 1) {
                         var source_col_index: isize = board_dim - 1;
                         while (source_col_index >= 0) : (source_col_index -= 1) {
-                            drawTileFromCoords(world, tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            drawTileFromCoords(platform_api, world, tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
                             dest_tile_coords[0] += 1; // Increment col
                         }
                         dest_tile_coords[1] += 1; // Increment row
@@ -877,7 +896,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                     var source_col_index: isize = board_dim - 1;
                     while (source_col_index >= 0) : (source_col_index -= 1) {
                         for (0..board_dim) |source_row_index| {
-                            drawTileFromCoords(world, tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            drawTileFromCoords(platform_api, world, tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
                             dest_tile_coords[0] += 1; // Increment col
                         }
                         dest_tile_coords[1] += 1; // Increment row
@@ -895,6 +914,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                             board_dim + @as(usize, @intCast(game_state.selected_region_p[0]))
                     ].tiles[region_row_index * board_dim + region_col_index];
                     var dest_pos = isoProj(
+                        platform_api,
                         .{
                             .x = @as(f32, @floatFromInt(region_col_index)) * scaled_tile_dim.x,
                             .y = @as(f32, @floatFromInt(region_row_index)) * scaled_tile_dim.y,
@@ -909,7 +929,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                         game_state.selected_tile_p[1] == @as(i32, @intCast(region_row_index)))
                         dest_pos.y -= (scaled_tile_dim.y / 2.0) * 0.25;
 
-                    drawTile(tileset, tile_id, dest_pos, game_state.scale_factor, rl.WHITE);
+                    drawTile(platform_api, tileset, tile_id, dest_pos, game_state.scale_factor, rl.WHITE);
                 }
             }
         },
@@ -919,6 +939,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
         // NOTE(caleb): + 1 for outer grid lines
         for (0..board_dim + 1) |grid_row| {
             const start_p = isoProj(
+                platform_api,
                 .{
                     .x = 0,
                     .y = @as(f32, @floatFromInt(grid_row)),
@@ -928,6 +949,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                 game_state.board_translation,
             );
             const end_p = isoProj(
+                platform_api,
                 .{
                     .x = board_dim,
                     .y = @as(f32, @floatFromInt(grid_row)),
@@ -936,10 +958,11 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                 @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * game_state.scale_factor),
                 game_state.board_translation,
             );
-            rl.DrawLineEx(start_p, end_p, 1, rl.RED);
+            platform_api.drawLineEx(start_p, end_p, 1, rl.RED);
         }
         for (0..board_dim + 1) |grid_col| {
             const start_p = isoProj(
+                platform_api,
                 .{
                     .x = @floatFromInt(grid_col),
                     .y = 0.0,
@@ -949,6 +972,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                 game_state.board_translation,
             );
             const end_p = isoProj(
+                platform_api,
                 .{
                     .x = @as(f32, @floatFromInt(grid_col)),
                     .y = @as(f32, @floatFromInt(board_dim)),
@@ -957,7 +981,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                 @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * game_state.scale_factor),
                 game_state.board_translation,
             );
-            rl.DrawLineEx(start_p, end_p, 1, rl.RED);
+            platform_api.drawLineEx(start_p, end_p, 1, rl.RED);
         }
     }
 
@@ -985,6 +1009,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
 
                         const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
                         var projected_p = isoProjGlyph(
+                            platform_api,
                             .{
                                 .x = @as(f32, @floatFromInt(grid_col_index)),
                                 .y = @as(f32, @floatFromInt(grid_row_index)),
@@ -994,7 +1019,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                             game_state.board_translation,
                         );
                         projected_p.y += y_offset;
-                        rl.DrawTextCodepoint(
+                        platform_api.drawTextCodepoint(
                             game_state.rl_font,
                             @intCast(tile_distance + '0'),
                             projected_p,
@@ -1014,6 +1039,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
 
             const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
             var projected_p = isoProjGlyph(
+                platform_api,
                 tile_p_components.data[tpc_index],
                 @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * game_state.scale_factor),
                 @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * game_state.scale_factor),
@@ -1023,7 +1049,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
 
             const entity_id = tile_p_components.data_to_entity.get(tpc_index) orelse unreachable;
             if (entity_man.hasComponent(entity_id, .inventory) and !entity_man.hasComponent(entity_id, .worker_state)) {
-                rl.DrawTextCodepoint(
+                platform_api.drawTextCodepoint(
                     game_state.rl_font,
                     @intCast('p'),
                     projected_p,
@@ -1035,7 +1061,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                     .get(entity_id) orelse unreachable;
                 switch (resource_kind_components.data[resource_kind_index]) {
                     .rock => {
-                        rl.DrawTextCodepoint(
+                        platform_api.drawTextCodepoint(
                             game_state.rl_font,
                             @intCast('r'),
                             projected_p,
@@ -1044,7 +1070,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                         );
                     },
                     .stick => {
-                        rl.DrawTextCodepoint(
+                        platform_api.drawTextCodepoint(
                             game_state.rl_font,
                             @intCast('s'),
                             projected_p,
@@ -1053,7 +1079,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                         );
                     },
                     .berry => {
-                        rl.DrawTextCodepoint(
+                        platform_api.drawTextCodepoint(
                             game_state.rl_font,
                             @intCast('b'),
                             projected_p,
@@ -1075,13 +1101,14 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
             const is_selected_tile = false; // FIXME
             const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
             var projected_p = isoProjGlyph(
+                platform_api,
                 tile_p_components.data[worker_tile_p_index],
                 @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * game_state.scale_factor),
                 @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * game_state.scale_factor),
                 game_state.board_translation,
             );
             projected_p.y += y_offset;
-            rl.DrawTextCodepoint(game_state.rl_font, @intCast('@'), projected_p, glyph_size, rl.ORANGE);
+            platform_api.drawTextCodepoint(game_state.rl_font, @intCast('@'), projected_p, glyph_size, rl.ORANGE);
         }
     }
 
@@ -1116,7 +1143,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                         .{},
                     ) catch unreachable;
                 }
-                rl.DrawTextEx(game_state.rl_font, infoz, .{
+                platform_api.drawTextEx(game_state.rl_font, infoz, .{
                     .x = 0.0,
                     .y = @as(f32, @floatFromInt(platform_api.getScreenHeight() - @divFloor(
                         platform_api.getScreenHeight(),
@@ -1130,8 +1157,8 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
 
     // Pause text
     if (game_state.is_paused) {
-        const paused_width = rl.MeasureText("PAUSED", glyph_size * 2);
-        rl.DrawTextEx(game_state.rl_font, "PAUSED", .{
+        const paused_width = platform_api.measureText("PAUSED", glyph_size * 2);
+        platform_api.drawTextEx(game_state.rl_font, "PAUSED", .{
             .x = @floatFromInt(@divFloor(platform_api.getScreenWidth(), 2) - @divFloor(paused_width, 2)),
             .y = @floatFromInt(platform_api.getScreenHeight() - @divFloor(platform_api.getScreenHeight(), 5)),
         }, glyph_size * 2, 1.0, rl.WHITE);
@@ -1162,12 +1189,12 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
             resource_countz,
             entity_countz,
         }, 0..) |strz, strz_index| {
-            rl.DrawTextEx(game_state.rl_font, strz, .{
+            platform_api.drawTextEx(game_state.rl_font, strz, .{
                 .x = 0, //@as(f32, @floatFromInt(board_dim)) * tile_width_px,
                 .y = @as(f32, @floatFromInt(strz_index)) * 40,
             }, glyph_size, 1.0, rl.WHITE);
         }
     }
 
-    rl.EndDrawing();
+    platform_api.endDrawing();
 }

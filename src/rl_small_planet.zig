@@ -20,22 +20,6 @@ const heap = std.heap;
 
 const FixedBufferAllocator = heap.FixedBufferAllocator;
 
-fn loadTexture(path: [:0]const u8) rl.Texture {
-    return rl.LoadTexture(path);
-}
-
-fn getFontDefault() rl.Font {
-    return rl.GetFontDefault();
-}
-
-fn getMouseWheelMove() f32 {
-    return rl.GetMouseWheelMove();
-}
-
-fn getMousePosition() rl.Vector2 {
-    return rl.GetMousePosition();
-}
-
 pub extern "c" fn dlerror() ?[*:0]const u8;
 
 const LibraryHandle = if (builtin.os.tag == .windows) std.os.windows.HMODULE else *anyopaque;
@@ -79,7 +63,7 @@ fn loadLibraryFunction(library_handle: LibraryHandle, function_name: []const u8)
     var result: ?LibraryFunction = null;
     switch (builtin.os.tag) {
         .windows => {
-            result = std.os.windows.kernel32.GetProcAddress(library_handle, function_name);
+            result = std.os.windows.kernel32.GetProcAddress(library_handle, function_name.ptr);
         },
         else => unreachable,
     }
@@ -103,6 +87,22 @@ pub fn main() !void {
         .getFontDefault = getFontDefault,
         .getMouseWheelMove = getMouseWheelMove,
         .getMousePosition = getMousePosition,
+        .isMouseButtonDown = isMouseButtonDown,
+        .isKeyDown = isKeyDown,
+        .getScreenWidth = getScreenWidth,
+        .getScreenHeight = getScreenHeight,
+        .matrixInvert = matrixInvert,
+        .drawTexturePro = drawTexturePro,
+        .getMouseDelta = getMouseDelta,
+        .getTime = getTime,
+        .getKeyPressed = getKeyPressed,
+        .beginDrawing = beginDrawing,
+        .clearBackground = clearBackground,
+        .drawLineEx = drawLineEx,
+        .drawTextCodepoint = drawTextCodepoint,
+        .drawTextEx = drawTextEx,
+        .endDrawing = endDrawing,
+        .measureText = measureText,
     };
 
     var game_state: platform.GameState = undefined;
@@ -115,36 +115,20 @@ pub fn main() !void {
     rl.SetMusicVolume(track1, 0.0);
 
     const rel_lib_path = "./zig-out/lib/";
-
     const active_game_code_path = try fs.path.join(
         perm_fba.allocator(),
-        &[_][]const u8{ rel_lib_path, try std.mem.join(
-            perm_fba.allocator(),
-            ".",
-            &.{
-                "libactive-sp-game-code",
-                if (builtin.os.tag == .windows) "dll" else "so",
-            },
-        ) },
+        &[_][]const u8{
+            rel_lib_path,
+            if (builtin.os.tag == .windows) "active-sp-game-code.dll" else "libactive-sp-game-code.so",
+        },
     );
-
     const game_code_path = try fs.path.join(
         perm_fba.allocator(),
-        &[_][]const u8{ rel_lib_path, try std.mem.join(
-            perm_fba.allocator(),
-            ".",
-            &.{
-                "libsp-game-code",
-                if (builtin.os.tag == .windows) "dll" else "so",
-            },
-        ) },
+        &[_][]const u8{
+            rel_lib_path,
+            if (builtin.os.tag == .windows) "sp-game-code.dll" else "libsp-game-code.so",
+        },
     );
-
-    if (true) {
-        std.debug.print("{s}\n", .{game_code_path});
-        std.debug.print("{s}\n", .{active_game_code_path});
-        // unreachable;
-    }
 
     var game_code_file_ctime = (try fs.cwd().statFile(game_code_path)).ctime;
     const lib_dir = try fs.cwd().openDir(rel_lib_path, .{});
@@ -168,4 +152,84 @@ pub fn main() !void {
         smallPlanetGameCode(&platform_api, &game_state);
     }
     rl.CloseWindow();
+}
+
+fn loadTexture(path: [:0]const u8) rl.Texture {
+    return rl.LoadTexture(path);
+}
+
+fn getFontDefault() rl.Font {
+    return rl.GetFontDefault();
+}
+
+fn getMouseWheelMove() f32 {
+    return rl.GetMouseWheelMove();
+}
+
+fn getMousePosition() rl.Vector2 {
+    return rl.GetMousePosition();
+}
+
+fn isMouseButtonDown(mouse_button: c_int) bool {
+    return rl.IsMouseButtonDown(mouse_button);
+}
+
+fn isKeyDown(key: c_int) bool {
+    return rl.IsKeyDown(key);
+}
+
+fn getScreenWidth() c_int {
+    return rl.GetScreenWidth();
+}
+
+fn getScreenHeight() c_int {
+    return rl.GetScreenHeight();
+}
+
+fn matrixInvert(matrix: rl.Matrix) rl.Matrix {
+    return rl.MatrixInvert(matrix);
+}
+
+fn drawTexturePro(texture: rl.Texture, source: rl.Rectangle, dest: rl.Rectangle, origin: rl.Vector2, rotation: f32, tint: rl.Color) void {
+    return rl.DrawTexturePro(texture, source, dest, origin, rotation, tint);
+}
+
+fn getMouseDelta() rl.Vector2 {
+    return rl.GetMouseDelta();
+}
+
+fn getTime() f64 {
+    return rl.GetTime();
+}
+
+fn getKeyPressed() c_int {
+    return rl.GetKeyPressed();
+}
+
+fn beginDrawing() void {
+    rl.BeginDrawing();
+}
+
+fn clearBackground(color: rl.Color) void {
+    rl.ClearBackground(color);
+}
+
+fn drawLineEx(start: rl.Vector2, end: rl.Vector2, thick: f32, tint: rl.Color) void {
+    return rl.DrawLineEx(start, end, thick, tint);
+}
+
+fn drawTextCodepoint(font: rl.Font, code_point: c_int, p: rl.Vector2, size: f32, color: rl.Color) void {
+    rl.DrawTextCodepoint(font, code_point, p, size, color);
+}
+
+fn drawTextEx(font: rl.Font, text: [*:0]const u8, p: rl.Vector2, size: f32, spacing: f32, color: rl.Color) void {
+    rl.DrawTextEx(font, text, p, size, spacing, color);
+}
+
+fn endDrawing() void {
+    rl.EndDrawing();
+}
+
+fn measureText(text: [*:0]const u8, glyph_size: c_int) c_int {
+    return rl.MeasureText(text, glyph_size);
 }
