@@ -62,6 +62,14 @@ const ViewMode = enum {
     world,
 };
 
+fn vector2Subtract(lhs: rl.Vector2, rhs: rl.Vector2) rl.Vector2 {
+    return rl.Vector2{
+        .x = lhs.x + rhs.x,
+        .y = lhs.y + rhs.y,
+        .z = lhs.z + rhs.z,
+    };
+}
+
 inline fn vector2DistanceU16(v1: @Vector(2, u16), v2: @Vector(2, u16)) f32 {
     const result = @sqrt(@as(f32, @floatFromInt((v1[0] - v2[0]) * (v1[0] - v2[0]) + (v1[1] - v2[1]) * (v1[1] - v2[1]))));
     return result;
@@ -161,10 +169,14 @@ fn screenSpaceBoardHeight(tile_width_px: u16, tile_height_px: u16) f32 {
 }
 
 fn boardOffset(tile_width_px: u16, tile_height_px: u16) rl.Vector2 {
-    return rl.Vector2{
-        .x = @as(f32, @floatFromInt(rl.GetScreenWidth())) / 2.0 - @as(f32, @floatFromInt(tile_width_px)) / 2.0,
-        .y = (@as(f32, @floatFromInt(rl.GetScreenHeight())) - screenSpaceBoardHeight(tile_width_px, tile_height_px)) / 2.0,
-    };
+    _ = tile_height_px;
+    _ = tile_width_px;
+    _ = tile_height_px;
+    _ = tile_width_px;
+    return rl.Vector2{ .x = 0.0, .y = 0.0 };
+    // .x = @as(f32, @floatFromInt(platform_api.getScreenWidth())) / 2.0 - @as(f32, @floatFromInt(tile_width_px)) / 2.0,
+    // .y = (@as(f32, @floatFromInt(platform_api.getScreenHeight())) - screenSpaceBoardHeight(tile_width_px, tile_height_px)) / 2.0,
+    // };
 }
 
 fn isoInvert(
@@ -173,8 +185,8 @@ fn isoInvert(
     tile_height_px: u16,
     board_translation: rl.Vector2,
 ) rl.Vector2 {
-    const untranslated_p = rl.Vector2Subtract(p, board_translation);
-    const unshifted_p = rl.Vector2Subtract(untranslated_p, boardOffset(tile_width_px, tile_height_px));
+    const untranslated_p = platform_api.vector2Subtract(p, board_translation);
+    const unshifted_p = platform_api.vector2Subtract(untranslated_p, boardOffset(tile_width_px, tile_height_px));
     const invert_proj_mat = rl.MatrixInvert(isoProjMatrix());
     return matrixVector2Multiply(invert_proj_mat, unshifted_p);
 }
@@ -186,8 +198,8 @@ fn isoProj(
     board_translation: rl.Vector2,
 ) rl.Vector2 {
     const projected_p = matrixVector2Multiply(isoProjMatrix(), p);
-    const shifted_p = rl.Vector2Add(projected_p, boardOffset(tile_width_px, tile_height_px));
-    const translated_p = rl.Vector2Add(shifted_p, board_translation);
+    const shifted_p = platform_api.vector2Add(projected_p, boardOffset(tile_width_px, tile_height_px));
+    const translated_p = platform_api.vector2Add(shifted_p, board_translation);
     return translated_p;
 }
 
@@ -197,7 +209,7 @@ fn isoProjGlyph(
     tile_height_px: u16,
     board_translation: rl.Vector2,
 ) rl.Vector2 {
-    return rl.Vector2Add(isoProj(p, tile_width_px, tile_height_px, board_translation), .{
+    return platform_api.vector2Add(isoProj(p, tile_width_px, tile_height_px, board_translation), .{
         .x = glyph_size / 2 + glyph_size / 3,
         .y = 0,
     });
@@ -515,7 +527,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
 
         game_state.draw_rot_state = @intFromEnum(DrawRotState.rotate_nonce);
 
-        game_state.rl_font = rl.GetFontDefault();
+        game_state.rl_font = platform_api.getFontDefault();
 
         game_state.did_init = true;
     }
@@ -539,7 +551,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
     var view_mode: ViewMode = @enumFromInt(game_state.view_mode);
     var draw_rot_state: DrawRotState = @enumFromInt(game_state.draw_rot_state);
 
-    const mouse_wheel_move = rl.GetMouseWheelMove();
+    const mouse_wheel_move = platform_api.getMouseWheelMove();
     if (mouse_wheel_move != 0) {
         game_state.scale_factor += if (mouse_wheel_move == -1) -scale_inc else scale_inc;
         game_state.scale_factor = clampf32(game_state.scale_factor, 1.0, 10.0);
@@ -550,11 +562,11 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
         .y = @as(f32, @floatFromInt(tileset.tile_height)) * game_state.scale_factor,
     };
 
-    const new_mouse_p = rl.GetMousePosition();
+    const new_mouse_p = platform_api.getMousePosition();
     const mouse_moved = (rl.Vector2Equals(game_state.mouse_p, new_mouse_p) == 0);
     game_state.mouse_p = new_mouse_p;
     const deprojected_mouse_p = isoInvert(
-        rl.Vector2Subtract(game_state.mouse_p, .{ .x = scaled_tile_dim.x / 2.0, .y = 0.0 }),
+        platform_api.vector2Subtract(game_state.mouse_p, .{ .x = scaled_tile_dim.x / 2.0, .y = 0.0 }),
         @intFromFloat(scaled_tile_dim.x),
         @intFromFloat(scaled_tile_dim.y),
         game_state.board_translation,
@@ -564,12 +576,12 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
         game_state.selected_tile_p[1] = @intFromFloat(deprojected_mouse_p.y / scaled_tile_dim.y);
     }
 
-    if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_RIGHT))
-        game_state.board_translation = rl.Vector2Add(game_state.board_translation, rl.GetMouseDelta());
+    if (platform_api.isMouseButtonDown(rl.MOUSE_BUTTON_RIGHT))
+        game_state.board_translation = platform_api.vector2Add(game_state.board_translation, rl.GetMouseDelta());
 
     var key_pressed = rl.GetKeyPressed();
     while (key_pressed != 0) {
-        if (key_pressed == rl.KEY_R and rl.IsKeyDown(rl.KEY_LEFT_SHIFT)) {
+        if (key_pressed == rl.KEY_R and platform_api.isKeyDown(rl.KEY_LEFT_SHIFT)) {
             draw_rot_state =
                 @enumFromInt(@mod(@as(i8, @intCast(game_state.draw_rot_state)) - 1, @intFromEnum(DrawRotState.count)));
             game_state.draw_rot_state = @intFromEnum(draw_rot_state);
@@ -1106,8 +1118,8 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                 }
                 rl.DrawTextEx(game_state.rl_font, infoz, .{
                     .x = 0.0,
-                    .y = @as(f32, @floatFromInt(rl.GetScreenHeight() - @divFloor(
-                        rl.GetScreenHeight(),
+                    .y = @as(f32, @floatFromInt(platform_api.getScreenHeight() - @divFloor(
+                        platform_api.getScreenHeight(),
                         5,
                     ))) + offset_y,
                 }, glyph_size, 1.0, rl.WHITE);
@@ -1120,8 +1132,8 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
     if (game_state.is_paused) {
         const paused_width = rl.MeasureText("PAUSED", glyph_size * 2);
         rl.DrawTextEx(game_state.rl_font, "PAUSED", .{
-            .x = @floatFromInt(@divFloor(rl.GetScreenWidth(), 2) - @divFloor(paused_width, 2)),
-            .y = @floatFromInt(rl.GetScreenHeight() - @divFloor(rl.GetScreenHeight(), 5)),
+            .x = @floatFromInt(@divFloor(platform_api.getScreenWidth(), 2) - @divFloor(paused_width, 2)),
+            .y = @floatFromInt(platform_api.getScreenHeight() - @divFloor(platform_api.getScreenHeight(), 5)),
         }, glyph_size * 2, 1.0, rl.WHITE);
     }
 

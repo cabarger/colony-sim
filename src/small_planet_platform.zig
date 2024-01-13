@@ -21,6 +21,16 @@ const FixedBufferAllocator = std.heap.FixedBufferAllocator;
 
 pub const PlatformAPI = struct {
     loadTexture: *const fn ([:0]const u8) rl.Texture,
+    getFontDefault: *const fn () rl.Font,
+    getMouseWheelMove: *const fn () f32,
+    getMousePosition: *const fn () rl.Vector2,
+    isMouseButtonDown: *const fn (c_int) bool,
+    isKeyDown: *const fn (c_int) bool,
+    getScreenWidth: *const fn () c_int,
+    getScreenHeight: *const fn () c_int,
+    vector2Add: *const fn (rl.Vector2, rl.Vector2) rl.Vector2,
+    vector2Subtract: *const fn (rl.Vector2, rl.Vector2) rl.Vector2,
+    matrixInvert: *const fn (rl.Matrix) rl.Matrix,
 };
 
 // TODO(caleb): Function type for smallPlanetGameCode()

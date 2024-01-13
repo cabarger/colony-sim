@@ -24,14 +24,27 @@ fn loadTexture(path: [:0]const u8) rl.Texture {
     return rl.LoadTexture(path);
 }
 
-const LibraryHandle = if (builtin.os.tag == .windows) std.os.windows.HMODULE else unreachable;
+fn getFontDefault() rl.Font {
+    return rl.GetFontDefault();
+}
+
+fn getMouseWheelMove() f32 {
+    return rl.GetMouseWheelMove();
+}
+
+fn getMousePosition() rl.Vector2 {
+    return rl.GetMousePosition();
+}
+
+pub extern "c" fn dlerror() ?[*:0]const u8;
+
+const LibraryHandle = if (builtin.os.tag == .windows) std.os.windows.HMODULE else *anyopaque;
 fn loadLibrary(scratch_fba: *FixedBufferAllocator, path: []const u8) !LibraryHandle {
     var result: LibraryHandle = undefined;
+    const restore_end_index = scratch_fba.end_index;
+    defer scratch_fba.end_index = restore_end_index;
     switch (builtin.os.tag) {
         .windows => {
-            const restore_end_index = scratch_fba.end_index;
-            defer scratch_fba.end_index = restore_end_index;
-
             const lpstr_game_code_path =
                 try scratch_fba.allocator().alloc(u16, path.len + 1);
             for (path, 0..) |byte, byte_index|
@@ -41,8 +54,14 @@ fn loadLibrary(scratch_fba: *FixedBufferAllocator, path: []const u8) !LibraryHan
             result = try std.os.windows.LoadLibraryW(@ptrCast(lpstr_game_code_path.ptr));
         },
         else => {
-            // TODO(caleb): Linux
-            unreachable;
+            const pathz = try scratch_fba.allocator().dupeZ(u8, path);
+            std.debug.print("{s}\n", .{pathz});
+            var result2 = std.c.dlopen(pathz, 0x1);
+            if (result2 == null) {
+                std.debug.print("{s}\n", .{dlerror().?});
+                unreachable;
+            }
+            result = result2.?;
         },
     }
     return result;
@@ -55,7 +74,7 @@ fn closeLibrary(library_handle: LibraryHandle) void {
     }
 }
 
-const LibraryFunction = if (builtin.os.tag == .windows) std.os.windows.FARPROC else unreachable;
+const LibraryFunction = if (builtin.os.tag == .windows) std.os.windows.FARPROC else *anyopaque;
 fn loadLibraryFunction(library_handle: LibraryHandle, function_name: []const u8) ?LibraryFunction {
     var result: ?LibraryFunction = null;
     switch (builtin.os.tag) {
@@ -79,7 +98,12 @@ pub fn main() !void {
     var scratch_mem = heap.page_allocator.alloc(u8, 1024 * 1024) catch unreachable;
     var scratch_fba = FixedBufferAllocator.init(scratch_mem);
 
-    var platform_api = platform.PlatformAPI{ .loadTexture = loadTexture };
+    var platform_api = platform.PlatformAPI{
+        .loadTexture = loadTexture,
+        .getFontDefault = getFontDefault,
+        .getMouseWheelMove = getMouseWheelMove,
+        .getMousePosition = getMousePosition,
+    };
 
     var game_state: platform.GameState = undefined;
     game_state.did_init = false;
@@ -98,24 +122,31 @@ pub fn main() !void {
             perm_fba.allocator(),
             ".",
             &.{
-                "active-sp-game-code",
+                "libactive-sp-game-code",
                 if (builtin.os.tag == .windows) "dll" else "so",
             },
         ) },
     );
+
     const game_code_path = try fs.path.join(
         perm_fba.allocator(),
         &[_][]const u8{ rel_lib_path, try std.mem.join(
             perm_fba.allocator(),
             ".",
             &.{
-                "sp-game-code",
+                "libsp-game-code",
                 if (builtin.os.tag == .windows) "dll" else "so",
             },
         ) },
     );
 
-    var game_code_file_ctime = (fs.cwd().statFile(game_code_path) catch unreachable).ctime;
+    if (true) {
+        std.debug.print("{s}\n", .{game_code_path});
+        std.debug.print("{s}\n", .{active_game_code_path});
+        // unreachable;
+    }
+
+    var game_code_file_ctime = (try fs.cwd().statFile(game_code_path)).ctime;
     const lib_dir = try fs.cwd().openDir(rel_lib_path, .{});
     try fs.cwd().copyFile(game_code_path, lib_dir, fs.path.basename(active_game_code_path), .{});
 
@@ -128,7 +159,7 @@ pub fn main() !void {
         if ((try std.fs.cwd().statFile(game_code_path)).ctime != game_code_file_ctime) {
             closeLibrary(game_code_library);
             try fs.cwd().copyFile(game_code_path, lib_dir, fs.path.basename(active_game_code_path), .{});
-            game_code_library = loadLibrary(&scratch_fba, active_game_code_path);
+            game_code_library = try loadLibrary(&scratch_fba, active_game_code_path);
             game_code_fn_ptr = loadLibraryFunction(game_code_library, "smallPlanetGameCode") orelse unreachable;
             smallPlanetGameCode = @ptrCast(game_code_fn_ptr);
         }
