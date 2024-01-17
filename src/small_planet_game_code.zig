@@ -152,6 +152,18 @@ const DrawRotState = enum(u8) {
     count,
 };
 
+/// Depending on the rotation of the board, selected_tile_p won't reflect the
+/// correct tile in memory this function gives the de-rotated tile_p.
+inline fn canonicalizeTileP(tile_p: @Vector(2, i8), draw_rot_state: DrawRotState) @Vector(2, i8) {
+    return switch (draw_rot_state) {
+        .rotate_nonce => tile_p,
+        .rotate_once => @Vector(2, i8){ tile_p[1], (board_dim - 1) - tile_p[0] },
+        .rotate_twice => @Vector(2, i8){ (board_dim - 1) - tile_p[0], (board_dim - 1) - tile_p[1] },
+        .rotate_thrice => @Vector(2, i8){ (board_dim - 1) - tile_p[1], tile_p[0] },
+        else => unreachable,
+    };
+}
+
 inline fn isoProjMatrix() rl.Matrix {
     var result = mem.zeroes(rl.Matrix);
     result.m0 = 0.5;
@@ -659,7 +671,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
             if (@reduce(.And, game_state.selected_tile_p >= zero_vec) and @reduce(.And, game_state.selected_tile_p < dim_vec)) {
                 view_mode = .region;
                 game_state.view_mode = @intFromEnum(view_mode);
-                game_state.selected_region_p = @intCast(game_state.selected_tile_p);
+                game_state.selected_region_p = @intCast(canonicalizeTileP(game_state.selected_tile_p, @enumFromInt(game_state.draw_rot_state)));
             }
         } else if (key_pressed == rl.KEY_SPACE) {
             game_state.is_paused = !game_state.is_paused;
