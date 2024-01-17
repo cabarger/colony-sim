@@ -35,7 +35,7 @@ const assert = std.debug.assert;
 const board_dim = 33; // NOTE(caleb): Must = (power of 2) + 1
 const max_height = 10;
 const scale_inc: f32 = 0.25;
-const glyph_size = 30;
+const glyph_size = 18;
 const tick_rate_sec = 0.25;
 const worker_carry_cap = 3;
 
@@ -545,7 +545,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
 
         game_state.draw_rot_state = @intFromEnum(DrawRotState.rotate_nonce);
 
-        game_state.rl_font = platform_api.getFontDefault();
+        game_state.rl_font = platform_api.loadFont("assets/fonts/ComicMono.ttf");
 
         game_state.did_init = true;
     }
@@ -574,7 +574,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
     const mouse_wheel_move = platform_api.getMouseWheelMove();
     if (mouse_wheel_move != 0) {
         game_state.scale_factor += if (mouse_wheel_move == -1) -scale_inc else scale_inc;
-        game_state.scale_factor = clampf32(game_state.scale_factor, 1.0, 10.0);
+        game_state.scale_factor = clampf32(game_state.scale_factor, 0.25, 10.0);
     }
 
     const scaled_tile_dim: rl.Vector2 = .{
@@ -1173,7 +1173,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
 
         const game_timez = fmt.allocPrintZ(
             scratch_ally,
-            "Time: {d}::{d}::{d}::{d}",
+            "Time: {d}:{d}:{d}:{d}",
             .{ game_state.game_time_year, game_state.game_time_day, game_state.game_time_hour, game_state.game_time_minute },
         ) catch unreachable;
         const entity_countz = fmt.allocPrintZ(
@@ -1186,19 +1186,24 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
             "Resource count: {d}",
             .{resource_kind_components.data_count},
         ) catch unreachable;
+
+        const fpsz = fmt.allocPrintZ(
+            scratch_ally,
+            "FPS: {d}",
+            .{platform_api.getFPS()},
+        ) catch unreachable;
+
         for (&[_][:0]const u8{
             game_timez,
             resource_countz,
             entity_countz,
+            fpsz,
         }, 0..) |strz, strz_index| {
             platform_api.drawTextEx(game_state.rl_font, strz, .{
                 .x = 0, //@as(f32, @floatFromInt(board_dim)) * tile_width_px,
-                .y = @as(f32, @floatFromInt(strz_index)) * 40,
+                .y = @as(f32, @floatFromInt(strz_index)) * glyph_size,
             }, glyph_size, 1.0, rl.WHITE);
         }
     }
-
-    platform_api.drawFPS();
-
     platform_api.endDrawing();
 }

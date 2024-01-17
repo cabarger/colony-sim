@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
     const build_game_code = b.option(bool, "game-code", "When true builds game code") orelse false;
     if (build_game_code) {
         const game_code = b.addSharedLibrary(.{
-            .name = "sp-game-code", // NOTE(caleb): Explain the tmp prefix so future me knows why I did things this way.
+            .name = "game-code", // NOTE(caleb): Explain the tmp prefix so future me knows why I did things this way.
             .root_source_file = .{ .path = "src/small_planet_game_code.zig" },
             .target = target,
             .optimize = optimize,
@@ -22,7 +22,7 @@ pub fn build(b: *std.Build) void {
     const build_platform_code = b.option(bool, "platform-code", "When true builds platform code") orelse false;
     if (build_platform_code) {
         const platform_code = b.addExecutable(.{
-            .name = "sp",
+            .name = "small-planet",
             .root_source_file = .{ .path = "src/rl_small_planet.zig" },
             .target = target,
             .optimize = optimize,

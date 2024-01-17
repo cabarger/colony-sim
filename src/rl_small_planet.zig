@@ -80,7 +80,7 @@ fn loadLibraryFunction(
 
 pub fn main() !void {
     // Window/Audio init
-    rl.InitWindow(1600, 1200, "small-planet");
+    rl.InitWindow(800, 600, "small-planet");
     rl.SetWindowState(rl.FLAG_WINDOW_RESIZABLE);
     rl.InitAudioDevice();
 
@@ -114,7 +114,8 @@ pub fn main() !void {
         .drawTextEx = drawTextEx,
         .endDrawing = endDrawing,
         .measureText = measureText,
-        .drawFPS = drawFPS,
+        .getFPS = getFPS,
+        .loadFont = loadFont,
     };
 
     var game_state: platform.GameState = undefined;
@@ -131,14 +132,14 @@ pub fn main() !void {
         platform_fba.allocator(),
         &[_][]const u8{
             rel_lib_path,
-            if (builtin.os.tag == .windows) "active-sp-game-code.dll" else "libactive-sp-game-code.so",
+            if (builtin.os.tag == .windows) "active-game-code.dll" else "libactive-game-code.so",
         },
     );
     const game_code_path = try fs.path.join(
         platform_fba.allocator(),
         &[_][]const u8{
             rel_lib_path,
-            if (builtin.os.tag == .windows) "sp-game-code.dll" else "libsp-game-code.so",
+            if (builtin.os.tag == .windows) "game-code.dll" else "libgame-code.so",
         },
     );
 
@@ -152,12 +153,14 @@ pub fn main() !void {
 
     while (!rl.WindowShouldClose()) {
         // Detect new game code lib and load it.
-        if ((try std.fs.cwd().statFile(game_code_path)).ctime != game_code_file_ctime) {
+        const creation_time_now = (try std.fs.cwd().statFile(game_code_path)).ctime;
+        if (creation_time_now != game_code_file_ctime) {
             unloadLibrary(game_code_library);
             try fs.cwd().copyFile(game_code_path, lib_dir, fs.path.basename(active_game_code_path), .{});
             game_code_library = try loadLibrary(&platform_fba, active_game_code_path);
             game_code_fn_ptr = try loadLibraryFunction(&platform_fba, game_code_library, "smallPlanetGameCode");
             smallPlanetGameCode = @ptrCast(game_code_fn_ptr);
+            game_code_file_ctime = creation_time_now;
         }
 
         rl.UpdateMusicStream(track1);
@@ -246,6 +249,10 @@ fn measureText(text: [*:0]const u8, glyph_size: c_int) c_int {
     return rl.MeasureText(text, glyph_size);
 }
 
-fn drawFPS() void {
-    rl.DrawFPS(0, 300);
+fn getFPS() c_int {
+    return rl.GetFPS();
+}
+
+fn loadFont(font_path: [*:0]const u8) rl.Font {
+    return rl.LoadFont(font_path);
 }
