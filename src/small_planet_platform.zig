@@ -40,6 +40,7 @@ pub const PlatformAPI = struct {
     drawTextEx: *const fn (rl.Font, [*:0]const u8, rl.Vector2, f32, f32, rl.Color) void,
     endDrawing: *const fn () void,
     measureText: *const fn ([*:0]const u8, c_int) c_int,
+    drawFPS: *const fn () void,
 };
 
 // TODO(caleb): Function type for smallPlanetGameCode()

@@ -114,6 +114,7 @@ pub fn main() !void {
         .drawTextEx = drawTextEx,
         .endDrawing = endDrawing,
         .measureText = measureText,
+        .drawFPS = drawFPS,
     };
 
     var game_state: platform.GameState = undefined;
@@ -243,4 +244,8 @@ fn endDrawing() void {
 
 fn measureText(text: [*:0]const u8, glyph_size: c_int) c_int {
     return rl.MeasureText(text, glyph_size);
+}
+
+fn drawFPS() void {
+    rl.DrawFPS(0, 300);
 }

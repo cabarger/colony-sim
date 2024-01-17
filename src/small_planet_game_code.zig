@@ -583,7 +583,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
     };
 
     const new_mouse_p = platform_api.getMousePosition();
-    const mouse_moved = (vector2Equals(game_state.mouse_p, new_mouse_p) == 0);
+    const mouse_moved = (vector2Equals(game_state.mouse_p, new_mouse_p) != 0);
     game_state.mouse_p = new_mouse_p;
     const deprojected_mouse_p = isoInvert(
         platform_api,
@@ -1197,6 +1197,8 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
             }, glyph_size, 1.0, rl.WHITE);
         }
     }
+
+    platform_api.drawFPS();
 
     platform_api.endDrawing();
 }
