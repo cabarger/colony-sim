@@ -32,7 +32,7 @@ const FixedBufferAllocator = std.heap.FixedBufferAllocator;
 
 const assert = std.debug.assert;
 
-const board_dim = 33; // NOTE(caleb): Must = (power of 2) + 1
+const board_dim = 17; //33; // NOTE(caleb): Must = (power of 2) + 1
 const max_height = 10;
 const scale_inc: f32 = 0.25;
 const glyph_size = 18;
@@ -41,6 +41,7 @@ const worker_carry_cap = 3;
 
 const RegionData = struct {
     tiles: [board_dim * board_dim]u8,
+    height_map: [board_dim * board_dim]i16,
 };
 
 const World = struct {
@@ -62,21 +63,21 @@ const ViewMode = enum {
     world,
 };
 
-fn vector2Subtract(lhs: rl.Vector2, rhs: rl.Vector2) rl.Vector2 {
+inline fn vector2Subtract(lhs: rl.Vector2, rhs: rl.Vector2) rl.Vector2 {
     return rl.Vector2{
         .x = lhs.x - rhs.x,
         .y = lhs.y - rhs.y,
     };
 }
 
-fn vector2Add(lhs: rl.Vector2, rhs: rl.Vector2) rl.Vector2 {
+inline fn vector2Add(lhs: rl.Vector2, rhs: rl.Vector2) rl.Vector2 {
     return rl.Vector2{
         .x = lhs.x + rhs.x,
         .y = lhs.y + rhs.y,
     };
 }
 
-fn vector2Equals(lhs: rl.Vector2, rhs: rl.Vector2) c_int {
+inline fn vector2Equals(lhs: rl.Vector2, rhs: rl.Vector2) c_int {
     if (lhs.x == rhs.x and lhs.y == rhs.y)
         return 0;
     return 1;
@@ -269,8 +270,7 @@ fn drawTile(
     platform_api.drawTexturePro(tileset.texture, source_rect, dest_rect, .{ .x = 0, .y = 0 }, 0, tint);
 }
 
-/// NOTE(Caleb): WTF chill with the params.
-fn drawTileFromCoords(
+fn drawWorldTileFromCoords(
     platform_api: *platform.PlatformAPI,
     world: *const World,
     tileset: *const Tileset,
@@ -284,8 +284,44 @@ fn drawTileFromCoords(
     height_scale: f32,
     scale_factor: f32,
 ) void {
-    const tile_id = world.region_data[source_row_index * board_dim + source_col_index]
-        .tiles[0];
+    const tile_id = world.region_data[source_row_index * board_dim + source_col_index].tiles[0];
+    drawTileFormCoords(platform_api, tile_id, world.height_map, tileset, source_row_index, source_col_index, dest_row_index, scaled_tile_dim, board_translation, selected_tile_p, height_scale, scale_factor);
+}
+
+fn drawRegionTileFromCoords(
+    platform_api: *platform.PlatformAPI,
+    region_data: *const RegionData,
+    tileset: *const Tileset,
+    source_row_index: usize,
+    source_col_index: usize,
+    dest_row_index: usize,
+    dest_col_index: usize,
+    scaled_tile_dim: rl.Vector2,
+    board_translation: rl.Vector2,
+    selected_tile_p: @Vector(2, i8),
+    height_scale: f32,
+    scale_factor: f32,
+) void {
+    const tile_id = region_data.tiles[source_row_index * board_dim + source_col_index];
+    drawTileFormCoords(platform_api, tile_id, region_data.height_map, tileset, source_row_index, source_col_index, dest_row_index, scaled_tile_dim, board_translation, selected_tile_p, height_scale, scale_factor);
+}
+
+/// NOTE(Caleb): WTF chill with the params.
+fn drawTileFromCoords(
+    platform_api: *platform.PlatformAPI,
+    tile_id: u8,
+    height_map: []i16,
+    tileset: *const Tileset,
+    source_row_index: usize,
+    source_col_index: usize,
+    dest_row_index: usize,
+    dest_col_index: usize,
+    scaled_tile_dim: rl.Vector2,
+    board_translation: rl.Vector2,
+    selected_tile_p: @Vector(2, i8),
+    height_scale: f32,
+    scale_factor: f32,
+) void {
     var dest_pos = isoProj(
         platform_api,
         .{
@@ -303,8 +339,8 @@ fn drawTileFromCoords(
         dest_pos.y -= (scaled_tile_dim.y / 2.0) * 0.25;
 
     // Shift up by height and height scale
-    if (world.height_map[source_row_index * board_dim + source_col_index] > 0) {
-        for (0..@intCast(world.height_map[source_row_index * board_dim + source_col_index])) |_| {
+    if (height_map[source_row_index * board_dim + source_col_index] > 0) {
+        for (0..@intCast(height_map[source_row_index * board_dim + source_col_index])) |_| {
             dest_pos.y -= ((scaled_tile_dim.y / 2.0) * height_scale);
             drawTile(platform_api, tileset, tile_id, dest_pos, scale_factor, rl.WHITE);
         }
@@ -381,7 +417,7 @@ fn genWorld(
     tile_p_components: *ecs.ComponentArray(@Vector(2, u16)),
     resource_kind_components: *ecs.ComponentArray(ResourceKind),
 ) !void {
-    // Generate a hightmap per region and use it to write sub-region tiles.
+    // Generate world heightmap
     for (0..board_dim * board_dim) |board_index|
         world.height_map[board_index] = 0;
     world.height_map[0] = rng.intRangeLessThan(i8, 0, max_height); // Top Left
@@ -395,39 +431,76 @@ fn genWorld(
         rng,
         1.0, // NOTE(caleb): Random height scalar lower = rougher terrain
     );
-    for (0..board_dim * board_dim) |region_tile_index| {
-        const height = world.height_map[region_tile_index];
-        var tile_id: u16 = undefined;
-        if (height <= 0) {
-            tile_id = tileset.tile_type_to_id.get(.water).?;
-        } else if (height == 1) {
-            tile_id = tileset.tile_type_to_id.get(.sand).?;
-        } else if (height > 1 and height < 4) {
-            tile_id = tileset.tile_type_to_id.get(.forest).?;
-        } else if (height > 3 and height < 7) {
-            tile_id = tileset.tile_type_to_id.get(.plains).?;
-        } else {
-            tile_id = tileset.tile_type_to_id.get(.rock).?;
-        }
 
-        for (0..board_dim) |sub_region_row_index| {
-            for (0..board_dim) |sub_region_col_index| {
-                const sub_region_tile_index: u16 = @intCast(sub_region_row_index * board_dim + sub_region_col_index);
-                world.region_data[region_tile_index].tiles[sub_region_tile_index] = @intCast(tile_id);
+    for (0..board_dim) |world_row_index| {
+        for (0..board_dim) |world_col_index| {
+            const world_tile_index: u16 = @intCast(world_row_index * board_dim + world_col_index);
 
-                // 1 in 10000 to gen a tree // FIXME(caleb): THIS IS A HACK AND SHOULD BE REPLACED!!
-                if (height >= 5 and rng.uintLessThan(u16, 10000) == 0) {
-                    const tree_entity_id = entity_man.newEntity();
-                    entity_man.signatures[tree_entity_id] = entity_man.entitySignature(.resource);
-                    tile_p_components.add(tree_entity_id, @Vector(2, u16){ @intCast(region_tile_index), sub_region_tile_index });
-                    resource_kind_components.add(tree_entity_id, .tree);
+            // Regional heightmap
+            world.region_data[world_tile_index].height_map[0] = // Top Left
+                if (world_row_index > 0 and world_col_index > 0)
+                world.height_map[(world_row_index - 1) * board_dim + world_col_index - 1]
+            else
+                rng.intRangeLessThan(i8, 0, max_height);
+
+            world.region_data[world_tile_index].height_map[board_dim - 1] = // Top right
+                if (world_row_index > 0 and world_col_index < board_dim - 1)
+                world.height_map[(world_row_index - 1) * board_dim + world_col_index + 1]
+            else
+                rng.intRangeLessThan(i8, 0, max_height);
+
+            world.region_data[world_tile_index].height_map[(board_dim - 1) * board_dim + (board_dim - 1)] = // Bottom right
+                if (world_row_index < board_dim - 1 and world_col_index < board_dim - 1)
+                world.height_map[(world_row_index + 1) * board_dim + world_col_index + 1]
+            else
+                rng.intRangeLessThan(i8, 0, max_height);
+
+            world.region_data[world_tile_index].height_map[(board_dim - 1) * board_dim] = // Bottom left
+                if (world_row_index < board_dim - 1 and world_col_index > 0)
+                world.height_map[(world_row_index + 1) * board_dim + world_col_index - 1]
+            else
+                rng.intRangeLessThan(i8, 0, max_height);
+
+            genHeightMap(
+                &world.region_data[world_tile_index].height_map,
+                @splat(@divTrunc(board_dim, 2)),
+                board_dim,
+                rng,
+                1.0, // NOTE(caleb): Random height scalar lower = rougher terrain
+            );
+
+            for (0..board_dim) |region_row_index| {
+                for (0..board_dim) |region_col_index| {
+                    const region_tile_index: u16 = @intCast(region_row_index * board_dim + region_col_index);
+                    const height = world.region_data[world_tile_index].height_map[region_tile_index];
+                    var tile_id: u16 = undefined;
+                    if (height <= 0) {
+                        tile_id = tileset.tile_type_to_id.get(.water).?;
+                    } else if (height == 1) {
+                        tile_id = tileset.tile_type_to_id.get(.sand).?;
+                    } else if (height > 1 and height < 4) {
+                        tile_id = tileset.tile_type_to_id.get(.forest).?;
+                    } else if (height > 3 and height < 7) {
+                        tile_id = tileset.tile_type_to_id.get(.plains).?;
+                    } else {
+                        tile_id = tileset.tile_type_to_id.get(.rock).?;
+                    }
+                    world.region_data[world_tile_index].tiles[region_tile_index] = @intCast(tile_id);
+
+                    // 1 in 10000 to gen a tree // FIXME(caleb): THIS IS A HACK AND SHOULD BE REPLACED!!
+                    if (height >= 5 and rng.uintLessThan(u16, 10000) == 0) {
+                        const tree_entity_id = entity_man.newEntity();
+                        entity_man.signatures[tree_entity_id] = entity_man.entitySignature(.resource);
+                        tile_p_components.add(tree_entity_id, @Vector(2, u16){ @intCast(world_tile_index), region_tile_index });
+                        resource_kind_components.add(tree_entity_id, .tree);
+                    }
+                    // else if (rl.GetRandomValue(0, 10) == 0) { // 1 in 200 for a pile
+                    //     const pile_entity_id = entity_man.newEntity();
+                    //     inventory_components.add(pile_entity_id, .{});
+                    //     tile_p_components.add(pile_entity_id, @Vector(2, u16){ @intCast(world_tile_index), sub_region_tile_index });
+                    //     entity_man.signatures[pile_entity_id] = pile_entity_sig;
+                    // }
                 }
-                // else if (rl.GetRandomValue(0, 10) == 0) { // 1 in 200 for a pile
-                //     const pile_entity_id = entity_man.newEntity();
-                //     inventory_components.add(pile_entity_id, .{});
-                //     tile_p_components.add(pile_entity_id, @Vector(2, u16){ @intCast(region_tile_index), sub_region_tile_index });
-                //     entity_man.signatures[pile_entity_id] = pile_entity_sig;
-                // }
             }
         }
     }
@@ -876,7 +949,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                 .rotate_nonce => {
                     for (0..board_dim) |source_row_index| {
                         for (0..board_dim) |source_col_index| {
-                            drawTileFromCoords(platform_api, world, tileset, source_row_index, source_col_index, source_row_index, source_col_index, scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            drawWorldTileFromCoords(platform_api, world, tileset, source_row_index, source_col_index, source_row_index, source_col_index, scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
                         }
                     }
                 },
@@ -885,7 +958,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                     for (0..board_dim) |source_col_index| {
                         var source_row_index: isize = board_dim - 1;
                         while (source_row_index >= 0) : (source_row_index -= 1) {
-                            drawTileFromCoords(platform_api, world, tileset, @intCast(source_row_index), source_col_index, dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            drawWorldTileFromCoords(platform_api, world, tileset, @intCast(source_row_index), source_col_index, dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
                             dest_tile_coords[0] += 1; // Increment col
                         }
                         dest_tile_coords[1] += 1; // Increment row
@@ -898,7 +971,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                     while (source_row_index >= 0) : (source_row_index -= 1) {
                         var source_col_index: isize = board_dim - 1;
                         while (source_col_index >= 0) : (source_col_index -= 1) {
-                            drawTileFromCoords(platform_api, world, tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            drawWorldTileFromCoords(platform_api, world, tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
                             dest_tile_coords[0] += 1; // Increment col
                         }
                         dest_tile_coords[1] += 1; // Increment row
@@ -910,7 +983,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                     var source_col_index: isize = board_dim - 1;
                     while (source_col_index >= 0) : (source_col_index -= 1) {
                         for (0..board_dim) |source_row_index| {
-                            drawTileFromCoords(platform_api, world, tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            drawWorldTileFromCoords(platform_api, world, tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
                             dest_tile_coords[0] += 1; // Increment col
                         }
                         dest_tile_coords[1] += 1; // Increment row
@@ -921,30 +994,51 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
             }
         },
         .region => {
-            for (0..board_dim) |region_row_index| {
-                for (0..board_dim) |region_col_index| {
-                    const tile_id = world.region_data[
-                        @as(usize, @intCast(game_state.selected_region_p[1])) *
-                            board_dim + @as(usize, @intCast(game_state.selected_region_p[0]))
-                    ].tiles[region_row_index * board_dim + region_col_index];
-                    var dest_pos = isoProj(
-                        platform_api,
-                        .{
-                            .x = @as(f32, @floatFromInt(region_col_index)) * scaled_tile_dim.x,
-                            .y = @as(f32, @floatFromInt(region_row_index)) * scaled_tile_dim.y,
-                        },
-                        @intFromFloat(scaled_tile_dim.x),
-                        @intFromFloat(scaled_tile_dim.y),
-                        game_state.board_translation,
-                    );
-
-                    // Shift selected tile up
-                    if (game_state.selected_tile_p[0] == @as(i32, @intCast(region_col_index)) and
-                        game_state.selected_tile_p[1] == @as(i32, @intCast(region_row_index)))
-                        dest_pos.y -= (scaled_tile_dim.y / 2.0) * 0.25;
-
-                    drawTile(platform_api, tileset, tile_id, dest_pos, game_state.scale_factor, rl.WHITE);
-                }
+                .rotate_nonce => {
+                    for (0..board_dim) |source_row_index| {
+                        for (0..board_dim) |source_col_index| {
+                            drawRegionTileFromCoords(platform_api, world.region_data[game_state.selected_region[1] * board_dim + game_state.selected_region[0]], tileset, source_row_index, source_col_index, source_row_index, source_col_index, scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                        }
+                    }
+                },
+                .rotate_once => {
+                    var dest_tile_coords = @Vector(2, usize){ 0, 0 };
+                    for (0..board_dim) |source_col_index| {
+                        var source_row_index: isize = board_dim - 1;
+                        while (source_row_index >= 0) : (source_row_index -= 1) {
+                            drawRegionTileFromCoords(platform_api,world.region_data[game_state.selected_region[1] * board_dim + game_state.selected_region[0]] , tileset, @intCast(source_row_index), source_col_index, dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            dest_tile_coords[0] += 1; // Increment col
+                        }
+                        dest_tile_coords[1] += 1; // Increment row
+                        dest_tile_coords[0] = 0; // Reset col
+                    }
+                },
+                .rotate_twice => {
+                    var dest_tile_coords = @Vector(2, usize){ 0, 0 };
+                    var source_row_index: isize = board_dim - 1;
+                    while (source_row_index >= 0) : (source_row_index -= 1) {
+                        var source_col_index: isize = board_dim - 1;
+                        while (source_col_index >= 0) : (source_col_index -= 1) {
+                            drawRegionTileFromCoords(platform_api,world.region_data[game_state.selected_region[1] * board_dim + game_state.selected_region[0]] , tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            dest_tile_coords[0] += 1; // Increment col
+                        }
+                        dest_tile_coords[1] += 1; // Increment row
+                        dest_tile_coords[0] = 0; // Reset col
+                    }
+                },
+                .rotate_thrice => {
+                    var dest_tile_coords = @Vector(2, usize){ 0, 0 };
+                    var source_col_index: isize = board_dim - 1;
+                    while (source_col_index >= 0) : (source_col_index -= 1) {
+                        for (0..board_dim) |source_row_index| {
+                            drawRegionTileFromCoords(platform_api,world.region_data[game_state.selected_region[1] * board_dim + game_state.selected_region[0]] , tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            dest_tile_coords[0] += 1; // Increment col
+                        }
+                        dest_tile_coords[1] += 1; // Increment row
+                        dest_tile_coords[0] = 0; // Reset col
+                    }
+                },
+                else => unreachable,
             }
         },
     }
