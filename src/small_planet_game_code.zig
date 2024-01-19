@@ -737,7 +737,9 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
             if (@reduce(.And, game_state.selected_tile_p >= zero_vec) and @reduce(.And, game_state.selected_tile_p < dim_vec)) {
                 view_mode = .region;
                 game_state.view_mode = @intFromEnum(view_mode);
-                game_state.selected_region_p = @intCast(canonicalizeTileP(game_state.selected_tile_p, @enumFromInt(game_state.draw_rot_state)));
+                game_state.selected_region_p = @intCast(
+                    canonicalizeTileP(game_state.selected_tile_p, @enumFromInt(game_state.draw_rot_state)),
+                );
             }
         } else if (key_pressed == rl.KEY_SPACE) {
             game_state.is_paused = !game_state.is_paused;
@@ -991,7 +993,10 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                 .rotate_nonce => {
                     for (0..board_dim) |source_row_index| {
                         for (0..board_dim) |source_col_index| {
-                            drawRegionTileFromCoords(platform_api, &world.region_data[game_state.selected_region_p[1] * board_dim + game_state.selected_region_p[0]], tileset, source_row_index, source_col_index, source_row_index, source_col_index, scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            const region_data_index: usize = @intCast(
+                                game_state.selected_region_p[1] * @as(usize, @intCast(board_dim)) + game_state.selected_region_p[0],
+                            );
+                            drawRegionTileFromCoords(platform_api, &world.region_data[region_data_index], tileset, source_row_index, source_col_index, source_row_index, source_col_index, scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
                         }
                     }
                 },
@@ -1000,7 +1005,23 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                     for (0..board_dim) |source_col_index| {
                         var source_row_index: isize = board_dim - 1;
                         while (source_row_index >= 0) : (source_row_index -= 1) {
-                            drawRegionTileFromCoords(platform_api, &world.region_data[game_state.selected_region_p[1] * board_dim + game_state.selected_region_p[0]], tileset, @intCast(source_row_index), source_col_index, dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            const region_data_index: usize = @intCast(
+                                game_state.selected_region_p[1] * @as(usize, @intCast(board_dim)) + game_state.selected_region_p[0],
+                            );
+                            drawRegionTileFromCoords(
+                                platform_api,
+                                &world.region_data[region_data_index],
+                                tileset,
+                                @intCast(source_row_index),
+                                source_col_index,
+                                dest_tile_coords[1],
+                                dest_tile_coords[0],
+                                scaled_tile_dim,
+                                game_state.board_translation,
+                                game_state.selected_tile_p,
+                                game_state.height_scale,
+                                game_state.scale_factor,
+                            );
                             dest_tile_coords[0] += 1; // Increment col
                         }
                         dest_tile_coords[1] += 1; // Increment row
@@ -1013,7 +1034,23 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                     while (source_row_index >= 0) : (source_row_index -= 1) {
                         var source_col_index: isize = board_dim - 1;
                         while (source_col_index >= 0) : (source_col_index -= 1) {
-                            drawRegionTileFromCoords(platform_api, &world.region_data[game_state.selected_region_p[1] * board_dim + game_state.selected_region_p[0]], tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            const region_data_index: usize = @intCast(
+                                game_state.selected_region_p[1] * @as(usize, @intCast(board_dim)) + game_state.selected_region_p[0],
+                            );
+                            drawRegionTileFromCoords(
+                                platform_api,
+                                &world.region_data[region_data_index],
+                                tileset,
+                                @intCast(source_row_index),
+                                @intCast(source_col_index),
+                                dest_tile_coords[1],
+                                dest_tile_coords[0],
+                                scaled_tile_dim,
+                                game_state.board_translation,
+                                game_state.selected_tile_p,
+                                game_state.height_scale,
+                                game_state.scale_factor,
+                            );
                             dest_tile_coords[0] += 1; // Increment col
                         }
                         dest_tile_coords[1] += 1; // Increment row
@@ -1025,7 +1062,23 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                     var source_col_index: isize = board_dim - 1;
                     while (source_col_index >= 0) : (source_col_index -= 1) {
                         for (0..board_dim) |source_row_index| {
-                            drawRegionTileFromCoords(platform_api, &world.region_data[game_state.selected_region_p[1] * board_dim + game_state.selected_region_p[0]], tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            const region_data_index: usize = @intCast(
+                                game_state.selected_region_p[1] * @as(usize, @intCast(board_dim)) + game_state.selected_region_p[0],
+                            );
+                            drawRegionTileFromCoords(
+                                platform_api,
+                                &world.region_data[region_data_index],
+                                tileset,
+                                @intCast(source_row_index),
+                                @intCast(source_col_index),
+                                dest_tile_coords[1],
+                                dest_tile_coords[0],
+                                scaled_tile_dim,
+                                game_state.board_translation,
+                                game_state.selected_tile_p,
+                                game_state.height_scale,
+                                game_state.scale_factor,
+                            );
                             dest_tile_coords[0] += 1; // Increment col
                         }
                         dest_tile_coords[1] += 1; // Increment row
