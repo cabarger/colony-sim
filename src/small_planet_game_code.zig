@@ -153,16 +153,56 @@ const DrawRotState = enum(u8) {
     count,
 };
 
+const Matrix2x2I8 = struct {
+    m0: i8,
+    m1: i8,
+    m2: i8,
+    m3: i8,
+
+    pub fn inverse(m: Matrix2x2I8) Matrix2x2I8 {
+        const determinant: f32 = 1.0 / @as(f32, @floatFromInt(m.m0 * m.m3 - m.m1 * m.m2));
+        const adjugate = Matrix2x2I8{
+            .m0 = m.m3,
+            .m1 = -m.m1,
+            .m2 = -m.m2,
+            .m3 = m.m0,
+        };
+        return Matrix2x2I8{
+            .m0 = @intFromFloat(@as(f32, @floatFromInt(adjugate.m0)) * determinant),
+            .m1 = @intFromFloat(@as(f32, @floatFromInt(adjugate.m1)) * determinant),
+            .m2 = @intFromFloat(@as(f32, @floatFromInt(adjugate.m2)) * determinant),
+            .m3 = @intFromFloat(@as(f32, @floatFromInt(adjugate.m3)) * determinant),
+        };
+    }
+
+    pub fn vectorMultiply(m: Matrix2x2I8, v: @Vector(2, i8)) @Vector(2, i8) {
+        return @Vector(2, i8){ m.m0 * v[0] + m.m2 * v[1], m.m1 * v[0] + m.m3 * v[1] };
+    }
+};
+
+// NOTE(caleb): This by itself isn't enough for a 90 board rotation
+// I subtract board_dim - 1 to the y component prior to the multiply.
+// The de-rotation adds board_dim - 1 after the multiply.
+const rotate_once_matrix = Matrix2x2I8{
+    .m0 = 0,
+    .m1 = 1,
+    .m2 = -1,
+    .m3 = 0,
+};
+const derotate_once_matrix = Matrix2x2I8.inverse(rotate_once_matrix);
+
+// NOTE(caleb): If I wanted to save time I could also precompute rotation matrices:
+// (and their inverses) twice and thrice.
+
 /// Depending on the rotation of the board, selected_tile_p won't reflect the
 /// correct tile in memory this function gives the de-rotated tile_p.
-inline fn canonicalizeTileP(tile_p: @Vector(2, i8), draw_rot_state: DrawRotState) @Vector(2, i8) {
-    return switch (draw_rot_state) {
-        .rotate_nonce => tile_p,
-        .rotate_once => @Vector(2, i8){ tile_p[1], (board_dim - 1) - tile_p[0] },
-        .rotate_twice => @Vector(2, i8){ (board_dim - 1) - tile_p[0], (board_dim - 1) - tile_p[1] },
-        .rotate_thrice => @Vector(2, i8){ (board_dim - 1) - tile_p[1], tile_p[0] },
-        else => unreachable,
-    };
+inline fn actualTileP(tile_p: @Vector(2, i8), draw_rot_state: DrawRotState) @Vector(2, i8) {
+    var result = tile_p;
+    for (0..@intFromEnum(draw_rot_state)) |_| {
+        result = Matrix2x2I8.vectorMultiply(derotate_once_matrix, result) +
+            @Vector(2, i8){ 0, @intCast(board_dim - 1) };
+    }
+    return result;
 }
 
 inline fn isoProjMatrix() rl.Matrix {
@@ -738,7 +778,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                 view_mode = .region;
                 game_state.view_mode = @intFromEnum(view_mode);
                 game_state.selected_region_p = @intCast(
-                    canonicalizeTileP(game_state.selected_tile_p, @enumFromInt(game_state.draw_rot_state)),
+                    actualTileP(game_state.selected_tile_p, @enumFromInt(game_state.draw_rot_state)),
                 );
             }
         } else if (key_pressed == rl.KEY_SPACE) {
@@ -940,152 +980,53 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
     // Draw board
     switch (view_mode) {
         .world => {
-            switch (draw_rot_state) {
-                .rotate_nonce => {
-                    for (0..board_dim) |source_row_index| {
-                        for (0..board_dim) |source_col_index| {
-                            drawWorldTileFromCoords(platform_api, world, tileset, source_row_index, source_col_index, source_row_index, source_col_index, scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
-                        }
-                    }
-                },
-                .rotate_once => {
-                    var dest_tile_coords = @Vector(2, usize){ 0, 0 };
-                    for (0..board_dim) |source_col_index| {
-                        var source_row_index: isize = board_dim - 1;
-                        while (source_row_index >= 0) : (source_row_index -= 1) {
-                            drawWorldTileFromCoords(platform_api, world, tileset, @intCast(source_row_index), source_col_index, dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
-                            dest_tile_coords[0] += 1; // Increment col
-                        }
-                        dest_tile_coords[1] += 1; // Increment row
-                        dest_tile_coords[0] = 0; // Reset col
-                    }
-                },
-                .rotate_twice => {
-                    var dest_tile_coords = @Vector(2, usize){ 0, 0 };
-                    var source_row_index: isize = board_dim - 1;
-                    while (source_row_index >= 0) : (source_row_index -= 1) {
-                        var source_col_index: isize = board_dim - 1;
-                        while (source_col_index >= 0) : (source_col_index -= 1) {
-                            drawWorldTileFromCoords(platform_api, world, tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
-                            dest_tile_coords[0] += 1; // Increment col
-                        }
-                        dest_tile_coords[1] += 1; // Increment row
-                        dest_tile_coords[0] = 0; // Reset col
-                    }
-                },
-                .rotate_thrice => {
-                    var dest_tile_coords = @Vector(2, usize){ 0, 0 };
-                    var source_col_index: isize = board_dim - 1;
-                    while (source_col_index >= 0) : (source_col_index -= 1) {
-                        for (0..board_dim) |source_row_index| {
-                            drawWorldTileFromCoords(platform_api, world, tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
-                            dest_tile_coords[0] += 1; // Increment col
-                        }
-                        dest_tile_coords[1] += 1; // Increment row
-                        dest_tile_coords[0] = 0; // Reset col
-                    }
-                },
-                else => unreachable,
+            for (0..board_dim) |dest_row_index| {
+                for (0..board_dim) |dest_col_index| {
+                    var source_tile_coords: @Vector(2, usize) = @intCast(
+                        actualTileP(@intCast(@Vector(2, usize){ dest_col_index, dest_row_index }), draw_rot_state),
+                    );
+                    drawWorldTileFromCoords(
+                        platform_api,
+                        world,
+                        tileset,
+                        source_tile_coords[1],
+                        source_tile_coords[0],
+                        dest_row_index,
+                        dest_col_index,
+                        scaled_tile_dim,
+                        game_state.board_translation,
+                        game_state.selected_tile_p,
+                        game_state.height_scale,
+                        game_state.scale_factor,
+                    );
+                }
             }
         },
         .region => {
-            switch (draw_rot_state) {
-                .rotate_nonce => {
-                    for (0..board_dim) |source_row_index| {
-                        for (0..board_dim) |source_col_index| {
-                            const region_data_index: usize = @intCast(
-                                game_state.selected_region_p[1] * @as(usize, @intCast(board_dim)) + game_state.selected_region_p[0],
-                            );
-                            drawRegionTileFromCoords(platform_api, &world.region_data[region_data_index], tileset, source_row_index, source_col_index, source_row_index, source_col_index, scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
-                        }
-                    }
-                },
-                .rotate_once => {
-                    var dest_tile_coords = @Vector(2, usize){ 0, 0 };
-                    for (0..board_dim) |source_col_index| {
-                        var source_row_index: isize = board_dim - 1;
-                        while (source_row_index >= 0) : (source_row_index -= 1) {
-                            const region_data_index: usize = @intCast(
-                                game_state.selected_region_p[1] * @as(usize, @intCast(board_dim)) + game_state.selected_region_p[0],
-                            );
-                            drawRegionTileFromCoords(
-                                platform_api,
-                                &world.region_data[region_data_index],
-                                tileset,
-                                @intCast(source_row_index),
-                                source_col_index,
-                                dest_tile_coords[1],
-                                dest_tile_coords[0],
-                                scaled_tile_dim,
-                                game_state.board_translation,
-                                game_state.selected_tile_p,
-                                game_state.height_scale,
-                                game_state.scale_factor,
-                            );
-                            dest_tile_coords[0] += 1; // Increment col
-                        }
-                        dest_tile_coords[1] += 1; // Increment row
-                        dest_tile_coords[0] = 0; // Reset col
-                    }
-                },
-                .rotate_twice => {
-                    var dest_tile_coords = @Vector(2, usize){ 0, 0 };
-                    var source_row_index: isize = board_dim - 1;
-                    while (source_row_index >= 0) : (source_row_index -= 1) {
-                        var source_col_index: isize = board_dim - 1;
-                        while (source_col_index >= 0) : (source_col_index -= 1) {
-                            const region_data_index: usize = @intCast(
-                                game_state.selected_region_p[1] * @as(usize, @intCast(board_dim)) + game_state.selected_region_p[0],
-                            );
-                            drawRegionTileFromCoords(
-                                platform_api,
-                                &world.region_data[region_data_index],
-                                tileset,
-                                @intCast(source_row_index),
-                                @intCast(source_col_index),
-                                dest_tile_coords[1],
-                                dest_tile_coords[0],
-                                scaled_tile_dim,
-                                game_state.board_translation,
-                                game_state.selected_tile_p,
-                                game_state.height_scale,
-                                game_state.scale_factor,
-                            );
-                            dest_tile_coords[0] += 1; // Increment col
-                        }
-                        dest_tile_coords[1] += 1; // Increment row
-                        dest_tile_coords[0] = 0; // Reset col
-                    }
-                },
-                .rotate_thrice => {
-                    var dest_tile_coords = @Vector(2, usize){ 0, 0 };
-                    var source_col_index: isize = board_dim - 1;
-                    while (source_col_index >= 0) : (source_col_index -= 1) {
-                        for (0..board_dim) |source_row_index| {
-                            const region_data_index: usize = @intCast(
-                                game_state.selected_region_p[1] * @as(usize, @intCast(board_dim)) + game_state.selected_region_p[0],
-                            );
-                            drawRegionTileFromCoords(
-                                platform_api,
-                                &world.region_data[region_data_index],
-                                tileset,
-                                @intCast(source_row_index),
-                                @intCast(source_col_index),
-                                dest_tile_coords[1],
-                                dest_tile_coords[0],
-                                scaled_tile_dim,
-                                game_state.board_translation,
-                                game_state.selected_tile_p,
-                                game_state.height_scale,
-                                game_state.scale_factor,
-                            );
-                            dest_tile_coords[0] += 1; // Increment col
-                        }
-                        dest_tile_coords[1] += 1; // Increment row
-                        dest_tile_coords[0] = 0; // Reset col
-                    }
-                },
-                else => unreachable,
+            // NOTE(caleb): I could also do the actual call here...
+            const region_data_index: usize = @intCast(
+                game_state.selected_region_p[1] * @as(usize, @intCast(board_dim)) + game_state.selected_region_p[0],
+            );
+            for (0..board_dim) |dest_row_index| {
+                for (0..board_dim) |dest_col_index| {
+                    var source_tile_coords: @Vector(2, usize) = @intCast(
+                        actualTileP(@intCast(@Vector(2, usize){ dest_col_index, dest_row_index }), draw_rot_state),
+                    );
+                    drawRegionTileFromCoords(
+                        platform_api,
+                        &world.region_data[region_data_index],
+                        tileset,
+                        source_tile_coords[1],
+                        source_tile_coords[0],
+                        dest_row_index,
+                        dest_col_index,
+                        scaled_tile_dim,
+                        game_state.board_translation,
+                        game_state.selected_tile_p,
+                        game_state.height_scale,
+                        game_state.scale_factor,
+                    );
+                }
             }
         },
     }
@@ -1346,11 +1287,25 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
             .{platform_api.getFPS()},
         ) catch unreachable;
 
+        const selected_region_p = fmt.allocPrintZ(
+            scratch_ally,
+            "Selected region p: ({d}, {d})",
+            .{ game_state.selected_region_p[0], game_state.selected_region_p[1] },
+        ) catch unreachable;
+
+        const selected_tile_p = fmt.allocPrintZ(
+            scratch_ally,
+            "Selected tile p: ({d}, {d})",
+            .{ game_state.selected_tile_p[0], game_state.selected_tile_p[1] },
+        ) catch unreachable;
+
         for (&[_][:0]const u8{
             game_timez,
             resource_countz,
             entity_countz,
             fpsz,
+            selected_region_p,
+            selected_tile_p,
         }, 0..) |strz, strz_index| {
             platform_api.drawTextEx(game_state.rl_font, strz, .{
                 .x = 0, //@as(f32, @floatFromInt(board_dim)) * tile_width_px,
