@@ -46,7 +46,7 @@ const RegionData = struct {
 
 const World = struct {
     region_data: []RegionData,
-    height_map: []i16,
+    height_map: [board_dim * board_dim]i16,
 };
 
 const TickGranularity = enum(u8) {
@@ -270,47 +270,11 @@ fn drawTile(
     platform_api.drawTexturePro(tileset.texture, source_rect, dest_rect, .{ .x = 0, .y = 0 }, 0, tint);
 }
 
-fn drawWorldTileFromCoords(
-    platform_api: *platform.PlatformAPI,
-    world: *const World,
-    tileset: *const Tileset,
-    source_row_index: usize,
-    source_col_index: usize,
-    dest_row_index: usize,
-    dest_col_index: usize,
-    scaled_tile_dim: rl.Vector2,
-    board_translation: rl.Vector2,
-    selected_tile_p: @Vector(2, i8),
-    height_scale: f32,
-    scale_factor: f32,
-) void {
-    const tile_id = world.region_data[source_row_index * board_dim + source_col_index].tiles[0];
-    drawTileFormCoords(platform_api, tile_id, world.height_map, tileset, source_row_index, source_col_index, dest_row_index, scaled_tile_dim, board_translation, selected_tile_p, height_scale, scale_factor);
-}
-
-fn drawRegionTileFromCoords(
-    platform_api: *platform.PlatformAPI,
-    region_data: *const RegionData,
-    tileset: *const Tileset,
-    source_row_index: usize,
-    source_col_index: usize,
-    dest_row_index: usize,
-    dest_col_index: usize,
-    scaled_tile_dim: rl.Vector2,
-    board_translation: rl.Vector2,
-    selected_tile_p: @Vector(2, i8),
-    height_scale: f32,
-    scale_factor: f32,
-) void {
-    const tile_id = region_data.tiles[source_row_index * board_dim + source_col_index];
-    drawTileFormCoords(platform_api, tile_id, region_data.height_map, tileset, source_row_index, source_col_index, dest_row_index, scaled_tile_dim, board_translation, selected_tile_p, height_scale, scale_factor);
-}
-
 /// NOTE(Caleb): WTF chill with the params.
 fn drawTileFromCoords(
     platform_api: *platform.PlatformAPI,
     tile_id: u8,
-    height_map: []i16,
+    height_map: []const i16,
     tileset: *const Tileset,
     source_row_index: usize,
     source_col_index: usize,
@@ -353,6 +317,42 @@ fn drawTileFromCoords(
     //     dest_pos.y -= scaled_tile_dim.y / 2.0;
     //     drawTile(&tileset, tree_tile_id, dest_pos, scale_factor, rl.WHITE);
     // }
+}
+
+fn drawWorldTileFromCoords(
+    platform_api: *platform.PlatformAPI,
+    world: *const World,
+    tileset: *const Tileset,
+    source_row_index: usize,
+    source_col_index: usize,
+    dest_row_index: usize,
+    dest_col_index: usize,
+    scaled_tile_dim: rl.Vector2,
+    board_translation: rl.Vector2,
+    selected_tile_p: @Vector(2, i8),
+    height_scale: f32,
+    scale_factor: f32,
+) void {
+    const tile_id = world.region_data[source_row_index * board_dim + source_col_index].tiles[0];
+    drawTileFromCoords(platform_api, tile_id, &world.height_map, tileset, source_row_index, source_col_index, dest_row_index, dest_col_index, scaled_tile_dim, board_translation, selected_tile_p, height_scale, scale_factor);
+}
+
+fn drawRegionTileFromCoords(
+    platform_api: *platform.PlatformAPI,
+    region_data: *const RegionData,
+    tileset: *const Tileset,
+    source_row_index: usize,
+    source_col_index: usize,
+    dest_row_index: usize,
+    dest_col_index: usize,
+    scaled_tile_dim: rl.Vector2,
+    board_translation: rl.Vector2,
+    selected_tile_p: @Vector(2, i8),
+    height_scale: f32,
+    scale_factor: f32,
+) void {
+    const tile_id = region_data.tiles[source_row_index * board_dim + source_col_index];
+    drawTileFromCoords(platform_api, tile_id, &region_data.height_map, tileset, source_row_index, source_col_index, dest_row_index, dest_col_index, scaled_tile_dim, board_translation, selected_tile_p, height_scale, scale_factor);
 }
 
 inline fn sumOfInventory(ica: *ecs.ComponentArray(Inventory), ica_index: usize) usize {
@@ -425,7 +425,7 @@ fn genWorld(
     world.height_map[(board_dim - 1) * board_dim] = rng.intRangeLessThan(i8, 0, max_height); // Bottom left
     world.height_map[(board_dim - 1) * board_dim + (board_dim - 1)] = rng.intRangeLessThan(i8, 0, max_height); // Bottom right
     genHeightMap(
-        world.height_map,
+        &world.height_map,
         @splat(@divTrunc(board_dim, 2)),
         board_dim,
         rng,
@@ -442,31 +442,27 @@ fn genWorld(
                 world.height_map[(world_row_index - 1) * board_dim + world_col_index - 1]
             else
                 rng.intRangeLessThan(i8, 0, max_height);
-
             world.region_data[world_tile_index].height_map[board_dim - 1] = // Top right
                 if (world_row_index > 0 and world_col_index < board_dim - 1)
                 world.height_map[(world_row_index - 1) * board_dim + world_col_index + 1]
             else
                 rng.intRangeLessThan(i8, 0, max_height);
-
             world.region_data[world_tile_index].height_map[(board_dim - 1) * board_dim + (board_dim - 1)] = // Bottom right
                 if (world_row_index < board_dim - 1 and world_col_index < board_dim - 1)
                 world.height_map[(world_row_index + 1) * board_dim + world_col_index + 1]
             else
                 rng.intRangeLessThan(i8, 0, max_height);
-
             world.region_data[world_tile_index].height_map[(board_dim - 1) * board_dim] = // Bottom left
                 if (world_row_index < board_dim - 1 and world_col_index > 0)
                 world.height_map[(world_row_index + 1) * board_dim + world_col_index - 1]
             else
                 rng.intRangeLessThan(i8, 0, max_height);
-
             genHeightMap(
                 &world.region_data[world_tile_index].height_map,
                 @splat(@divTrunc(board_dim, 2)),
                 board_dim,
                 rng,
-                1.0, // NOTE(caleb): Random height scalar lower = rougher terrain
+                0.99, // NOTE(caleb): Random height scalar lower = rougher terrain
             );
 
             for (0..board_dim) |region_row_index| {
@@ -583,10 +579,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                 RegionData,
                 board_dim * board_dim,
             ) catch unreachable,
-            .height_map = perm_ally.alloc(
-                i16,
-                board_dim * board_dim,
-            ) catch unreachable,
+            .height_map = undefined,
         };
 
         game_state.seed = 116; // NOTE(caleb): Happens to be a good seed. Nothing special otherwise.
@@ -994,10 +987,11 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
             }
         },
         .region => {
+            switch (draw_rot_state) {
                 .rotate_nonce => {
                     for (0..board_dim) |source_row_index| {
                         for (0..board_dim) |source_col_index| {
-                            drawRegionTileFromCoords(platform_api, world.region_data[game_state.selected_region[1] * board_dim + game_state.selected_region[0]], tileset, source_row_index, source_col_index, source_row_index, source_col_index, scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            drawRegionTileFromCoords(platform_api, &world.region_data[game_state.selected_region_p[1] * board_dim + game_state.selected_region_p[0]], tileset, source_row_index, source_col_index, source_row_index, source_col_index, scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
                         }
                     }
                 },
@@ -1006,7 +1000,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                     for (0..board_dim) |source_col_index| {
                         var source_row_index: isize = board_dim - 1;
                         while (source_row_index >= 0) : (source_row_index -= 1) {
-                            drawRegionTileFromCoords(platform_api,world.region_data[game_state.selected_region[1] * board_dim + game_state.selected_region[0]] , tileset, @intCast(source_row_index), source_col_index, dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            drawRegionTileFromCoords(platform_api, &world.region_data[game_state.selected_region_p[1] * board_dim + game_state.selected_region_p[0]], tileset, @intCast(source_row_index), source_col_index, dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
                             dest_tile_coords[0] += 1; // Increment col
                         }
                         dest_tile_coords[1] += 1; // Increment row
@@ -1019,7 +1013,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                     while (source_row_index >= 0) : (source_row_index -= 1) {
                         var source_col_index: isize = board_dim - 1;
                         while (source_col_index >= 0) : (source_col_index -= 1) {
-                            drawRegionTileFromCoords(platform_api,world.region_data[game_state.selected_region[1] * board_dim + game_state.selected_region[0]] , tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            drawRegionTileFromCoords(platform_api, &world.region_data[game_state.selected_region_p[1] * board_dim + game_state.selected_region_p[0]], tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
                             dest_tile_coords[0] += 1; // Increment col
                         }
                         dest_tile_coords[1] += 1; // Increment row
@@ -1031,7 +1025,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                     var source_col_index: isize = board_dim - 1;
                     while (source_col_index >= 0) : (source_col_index -= 1) {
                         for (0..board_dim) |source_row_index| {
-                            drawRegionTileFromCoords(platform_api,world.region_data[game_state.selected_region[1] * board_dim + game_state.selected_region[0]] , tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
+                            drawRegionTileFromCoords(platform_api, &world.region_data[game_state.selected_region_p[1] * board_dim + game_state.selected_region_p[0]], tileset, @intCast(source_row_index), @intCast(source_col_index), dest_tile_coords[1], dest_tile_coords[0], scaled_tile_dim, game_state.board_translation, game_state.selected_tile_p, game_state.height_scale, game_state.scale_factor);
                             dest_tile_coords[0] += 1; // Increment col
                         }
                         dest_tile_coords[1] += 1; // Increment row
