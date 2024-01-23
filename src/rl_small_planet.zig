@@ -112,10 +112,13 @@ pub fn main() !void {
         .drawLineEx = drawLineEx,
         .drawTextCodepoint = drawTextCodepoint,
         .drawTextEx = drawTextEx,
+        .drawRectangleRec = drawRectangleRec,
+        .drawRectangleLinesEx = drawRectangleLinesEx,
         .endDrawing = endDrawing,
         .measureText = measureText,
         .getFPS = getFPS,
         .loadFont = loadFont,
+        .checkCollisionPointRec = checkCollisionPointRec,
     };
 
     var game_state: platform.GameState = undefined;
@@ -239,6 +242,18 @@ fn drawTextCodepoint(font: rl.Font, code_point: c_int, p: rl.Vector2, size: f32,
 
 fn drawTextEx(font: rl.Font, text: [*:0]const u8, p: rl.Vector2, size: f32, spacing: f32, color: rl.Color) void {
     rl.DrawTextEx(font, text, p, size, spacing, color);
+}
+
+fn drawRectangleRec(rec: rl.Rectangle, color: rl.Color) void {
+    rl.DrawRectangleRec(rec, color);
+}
+
+fn drawRectangleLinesEx(rec: rl.Rectangle, line_thick: f32, color: rl.Color) void {
+    rl.DrawRectangleLinesEx(rec, line_thick, color);
+}
+
+fn checkCollisionPointRec(point: rl.Vector2, rec: rl.Rectangle) bool {
+    return rl.CheckCollisionPointRec(point, rec);
 }
 
 fn endDrawing() void {

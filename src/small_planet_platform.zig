@@ -38,10 +38,13 @@ pub const PlatformAPI = struct {
     drawLineEx: *const fn (rl.Vector2, rl.Vector2, f32, rl.Color) void,
     drawTextCodepoint: *const fn (rl.Font, c_int, rl.Vector2, f32, rl.Color) void,
     drawTextEx: *const fn (rl.Font, [*:0]const u8, rl.Vector2, f32, f32, rl.Color) void,
+    drawRectangleRec: *const fn (rl.Rectangle, rl.Color) void,
+    drawRectangleLinesEx: *const fn (rl.Rectangle, line_thick: f32, rl.Color) void,
     endDrawing: *const fn () void,
     measureText: *const fn ([*:0]const u8, c_int) c_int,
     getFPS: *const fn () c_int,
     loadFont: *const fn ([*:0]const u8) rl.Font,
+    checkCollisionPointRec: *const fn (point: rl.Vector2, rec: rl.Rectangle) bool,
 };
 
 // TODO(caleb): Function type for smallPlanetGameCode()
@@ -79,6 +82,8 @@ pub const GameState = struct {
 
     debug_draw_distance_map: bool,
     debug_draw_grid_lines: bool,
+    debug_draw_tile_height: bool,
+    debug_draw_tile_hitboxes: bool,
 
     is_paused: bool,
     pause_start_time: f64,
@@ -88,7 +93,7 @@ pub const GameState = struct {
     selected_tile_p: @Vector(2, i8),
     selected_region_p: @Vector(2, u8),
 
-    height_scale: f32,
+    draw_3d: bool,
     scale_factor: f32,
 
     board_translation: rl.Vector2,
