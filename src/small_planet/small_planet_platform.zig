@@ -9,8 +9,9 @@
 //!
 
 const std = @import("std");
-const rl = @import("rl.zig");
+const third_party = @import("third_party");
 
+const rl = third_party.rl;
 const math = std.math;
 const fmt = std.fmt;
 const mem = std.mem;

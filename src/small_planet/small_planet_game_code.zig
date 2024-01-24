@@ -13,11 +13,14 @@
 //- TODO(Caleb): Replace raylib Vector2 with builtin @Vector
 
 const std = @import("std");
-const rl = @import("rl.zig");
+const base = @import("base");
+const third_party = @import("third_party");
+
 const platform = @import("small_planet_platform.zig");
 const ecs = @import("ecs.zig");
-const base_math = @import("base/base_math.zig");
 
+const rl = third_party.rl;
+const base_math = base.base_math;
 const math = std.math;
 const fmt = std.fmt;
 const mem = std.mem;

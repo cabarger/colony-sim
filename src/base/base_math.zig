@@ -4,10 +4,8 @@
 //! Polymorphic Games
 //! zig 0.11.0
 //! Caleb Barger
-//! 01/024
+//! 01/23/24
 //! barg8397@vandals.uidaho.edu
-//!
-//! Small planet game code
 //!
 
 pub inline fn clampf32(value: f32, min: f32, max: f32) f32 {

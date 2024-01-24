@@ -12,9 +12,10 @@
 
 const builtin = @import("builtin");
 const std = @import("std");
-const rl = @import("rl.zig");
+const third_party = @import("third_party");
 const platform = @import("small_planet_platform.zig");
 
+const rl = third_party.rl;
 const fs = std.fs;
 const heap = std.heap;
 
