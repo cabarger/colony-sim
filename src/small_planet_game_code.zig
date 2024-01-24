@@ -10,10 +10,13 @@
 //! Small planet game code
 //!
 
+//- TODO(Caleb): Replace raylib Vector2 with builtin @Vector
+
 const std = @import("std");
 const rl = @import("rl.zig");
 const platform = @import("small_planet_platform.zig");
 const ecs = @import("ecs.zig");
+const base_math = @import("base/base_math.zig");
 
 const math = std.math;
 const fmt = std.fmt;
@@ -22,6 +25,7 @@ const fs = std.fs;
 const rand = std.rand;
 
 const Tileset = @import("Tileset.zig");
+const Matrix2x2I8 = base_math.Matrix2x2I8;
 
 const ArrayList = std.ArrayList;
 const AutoHashMap = std.AutoHashMap;
@@ -63,6 +67,45 @@ const ViewMode = enum {
     world,
 };
 
+const SWPEntry = struct {
+    distance: usize,
+    tile_p: @Vector(2, u16),
+};
+
+const DrawRotState = enum(u8) {
+    rotate_nonce = 0,
+    rotate_once,
+    rotate_twice,
+    rotate_thrice,
+
+    count,
+};
+
+const WorkerState = enum(u8) {
+    pathing_to_target,
+    choose_new_target,
+    idle,
+};
+
+const Inventory = packed struct {
+    rock_count: u16 = 0,
+    stick_count: u16 = 0,
+    berry_count: u16 = 0,
+};
+
+const ResourceKind = enum(usize) {
+    rock,
+    stick,
+    tree,
+    berry,
+};
+
+// Raylib vector math
+
+inline fn toRaylibVector2(comptime T: type, vec: @Vector(2, T)) rl.Vector2 {
+    return rl.Vector2{ .x = vec[0], .y = vec[1] };
+}
+
 inline fn vector2Subtract(lhs: rl.Vector2, rhs: rl.Vector2) rl.Vector2 {
     return rl.Vector2{
         .x = lhs.x - rhs.x,
@@ -88,14 +131,12 @@ inline fn vector2DistanceU16(v1: @Vector(2, u16), v2: @Vector(2, u16)) f32 {
     return result;
 }
 
-inline fn clampf32(value: f32, min: f32, max: f32) f32 {
-    return @max(min, @min(max, value));
+inline fn matrixVector2Multiply(m: rl.Matrix, p: rl.Vector2) rl.Vector2 {
+    return rl.Vector2{
+        .x = m.m0 * p.x + m.m4 * p.y,
+        .y = m.m1 * p.x + m.m5 * p.y,
+    };
 }
-
-const SWPEntry = struct {
-    distance: usize,
-    tile_p: @Vector(2, u16),
-};
 
 fn swpUpdateMap(
     scratch_fba: *FixedBufferAllocator,
@@ -144,42 +185,6 @@ fn swpUpdateMap(
     }
 }
 
-const DrawRotState = enum(u8) {
-    rotate_nonce = 0,
-    rotate_once,
-    rotate_twice,
-    rotate_thrice,
-
-    count,
-};
-
-const Matrix2x2I8 = struct {
-    m0: i8,
-    m1: i8,
-    m2: i8,
-    m3: i8,
-
-    pub fn inverse(m: Matrix2x2I8) Matrix2x2I8 {
-        const determinant: f32 = 1.0 / @as(f32, @floatFromInt(m.m0 * m.m3 - m.m1 * m.m2));
-        const adjugate = Matrix2x2I8{
-            .m0 = m.m3,
-            .m1 = -m.m1,
-            .m2 = -m.m2,
-            .m3 = m.m0,
-        };
-        return Matrix2x2I8{
-            .m0 = @intFromFloat(@as(f32, @floatFromInt(adjugate.m0)) * determinant),
-            .m1 = @intFromFloat(@as(f32, @floatFromInt(adjugate.m1)) * determinant),
-            .m2 = @intFromFloat(@as(f32, @floatFromInt(adjugate.m2)) * determinant),
-            .m3 = @intFromFloat(@as(f32, @floatFromInt(adjugate.m3)) * determinant),
-        };
-    }
-
-    pub fn vectorMultiply(m: Matrix2x2I8, v: @Vector(2, i8)) @Vector(2, i8) {
-        return @Vector(2, i8){ m.m0 * v[0] + m.m2 * v[1], m.m1 * v[0] + m.m3 * v[1] };
-    }
-};
-
 // NOTE(caleb): This by itself isn't enough for a 90 board rotation
 // I subtract board_dim - 1 to the y component prior to the multiply.
 // The de-rotation adds board_dim - 1 after the multiply.
@@ -216,13 +221,6 @@ inline fn isoProjMatrix() rl.Matrix {
     return result;
 }
 
-inline fn matrixVector2Multiply(m: rl.Matrix, p: rl.Vector2) rl.Vector2 {
-    return rl.Vector2{
-        .x = m.m0 * p.x + m.m4 * p.y,
-        .y = m.m1 * p.x + m.m5 * p.y,
-    };
-}
-
 fn screenSpaceBoardHeight(tile_width_px: u16, tile_height_px: u16) f32 {
     return matrixVector2Multiply(
         isoProjMatrix(),
@@ -234,7 +232,7 @@ fn screenSpaceBoardHeight(tile_width_px: u16, tile_height_px: u16) f32 {
 }
 
 fn boardOffset(
-    platform_api: *platform.PlatformAPI,
+    platform_api: *const platform.PlatformAPI,
     tile_width_px: u16,
     tile_height_px: u16,
 ) rl.Vector2 {
@@ -245,7 +243,7 @@ fn boardOffset(
 }
 
 fn isoInvert(
-    platform_api: *platform.PlatformAPI,
+    platform_api: *const platform.PlatformAPI,
     p: rl.Vector2,
     tile_width_px: u16,
     tile_height_px: u16,
@@ -258,7 +256,7 @@ fn isoInvert(
 }
 
 fn isoProj(
-    platform_api: *platform.PlatformAPI,
+    platform_api: *const platform.PlatformAPI,
     p: rl.Vector2,
     tile_width_px: u16,
     tile_height_px: u16,
@@ -271,7 +269,7 @@ fn isoProj(
 }
 
 fn isoProjGlyph(
-    platform_api: *platform.PlatformAPI,
+    platform_api: *const platform.PlatformAPI,
     p: rl.Vector2,
     tile_width_px: u16,
     tile_height_px: u16,
@@ -284,7 +282,7 @@ fn isoProjGlyph(
 }
 
 fn drawTile(
-    platform_api: *platform.PlatformAPI,
+    platform_api: *const platform.PlatformAPI,
     tileset: *const Tileset,
     tile_id: u16,
     dest_pos: rl.Vector2,
@@ -312,7 +310,7 @@ fn drawTile(
 
 /// NOTE(Caleb): WTF chill with the params.
 fn drawTileFromCoords(
-    platform_api: *platform.PlatformAPI,
+    platform_api: *const platform.PlatformAPI,
     tile_id: u8,
     height_map: []const i16,
     tileset: *const Tileset,
@@ -359,7 +357,7 @@ fn drawTileFromCoords(
 }
 
 fn drawWorldTileFromCoords(
-    platform_api: *platform.PlatformAPI,
+    platform_api: *const platform.PlatformAPI,
     world: *const World,
     tileset: *const Tileset,
     source_row_index: usize,
@@ -377,7 +375,7 @@ fn drawWorldTileFromCoords(
 }
 
 fn drawRegionTileFromCoords(
-    platform_api: *platform.PlatformAPI,
+    platform_api: *const platform.PlatformAPI,
     region_data: *const RegionData,
     tileset: *const Tileset,
     source_row_index: usize,
@@ -541,25 +539,6 @@ fn genWorld(
     }
 }
 
-const WorkerState = enum(u8) {
-    pathing_to_target,
-    choose_new_target,
-    idle,
-};
-
-const Inventory = packed struct {
-    rock_count: u16 = 0,
-    stick_count: u16 = 0,
-    berry_count: u16 = 0,
-};
-
-const ResourceKind = enum(usize) {
-    rock,
-    stick,
-    tree,
-    berry,
-};
-
 inline fn validCoords(coords: @Vector(2, i8)) bool {
     var result = false;
     if (@reduce(.And, coords >= @as(@Vector(2, i8), @splat(0))) and
@@ -568,7 +547,7 @@ inline fn validCoords(coords: @Vector(2, i8)) bool {
     return result;
 }
 
-export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *platform.GameState) void {
+export fn spUpdateAndRender(platform_api: *const platform.PlatformAPI, game_state: *platform.GameState) void {
     const perm_ally = game_state.perm_fba.allocator();
     const scratch_ally = game_state.scratch_fba.allocator();
 
@@ -581,6 +560,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
     var tileset: *Tileset = undefined;
     var world: *World = undefined;
 
+    //- cabarger: This is done once during the first game code load
     if (!game_state.did_init) {
         const max_entity_count = 2000;
         game_state.entity_man_offset = game_state.perm_fba.end_index;
@@ -700,7 +680,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
     const mouse_wheel_move = platform_api.getMouseWheelMove();
     if (mouse_wheel_move != 0) {
         game_state.scale_factor += if (mouse_wheel_move == -1) -scale_inc else scale_inc;
-        game_state.scale_factor = clampf32(game_state.scale_factor, 0.25, 10.0);
+        game_state.scale_factor = base_math.clampf32(game_state.scale_factor, 0.25, 10.0);
     }
 
     const scaled_tile_dim: rl.Vector2 = .{
@@ -714,7 +694,6 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
 
     if (mouse_moved) {
         if (game_state.draw_3d) {
-            // NOTE(caleb): Consider how this will scale when implementing regional view...
             game_state.selected_tile_p = .{ -1, -1 };
             outer: for (0..board_dim) |row_index| {
                 for (0..board_dim) |col_index| {
@@ -766,7 +745,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
         game_state.board_translation = vector2Add(game_state.board_translation, platform_api.getMouseDelta());
 
     var key_pressed = platform_api.getKeyPressed();
-    while (key_pressed != 0) {
+    while (key_pressed != 0) { //- cabarger: Handle input
         if (key_pressed == rl.KEY_R and platform_api.isKeyDown(rl.KEY_LEFT_SHIFT)) {
             draw_rot_state =
                 @enumFromInt(@mod(@as(i8, @intCast(game_state.draw_rot_state)) - 1, @intFromEnum(DrawRotState.count)));
@@ -822,7 +801,6 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
             view_mode = .world;
             game_state.view_mode = @intFromEnum(view_mode);
         } else if (key_pressed == rl.KEY_ENTER and view_mode == .world) {
-            // Check for a valid world_tile_p
             const zero_vec: @Vector(2, i8) = @splat(0);
             const dim_vec: @Vector(2, i8) = @splat(board_dim);
             if (@reduce(.And, game_state.selected_tile_p >= zero_vec) and @reduce(.And, game_state.selected_tile_p < dim_vec)) {
@@ -834,14 +812,20 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
             }
         } else if (key_pressed == rl.KEY_SPACE) {
             game_state.is_paused = !game_state.is_paused;
-            if (game_state.is_paused) { // NOTE(caleb): Record amount of time spent paused.
+            if (game_state.is_paused) { //- cabarger: Record amount of time spent paused.
                 game_state.pause_start_time = platform_api.getTime();
             } else game_state.last_tick_time += platform_api.getTime() - game_state.pause_start_time;
         }
         key_pressed = platform_api.getKeyPressed();
     }
 
-    if (!game_state.is_paused and platform_api.getTime() - game_state.last_tick_time >= tick_rate_sec) {
+    const time_now = platform_api.getTime();
+    if (!game_state.is_paused and time_now - game_state.last_tick_time >= tick_rate_sec) {
+        game_state.last_tick_time = time_now;
+
+        //- cabarger: Game tick updates updates happen here. The initial thinking was something like
+        //            do this tick n times depending on time granularity i.e once for 1 minutes 60 times
+        //            for hours etc.
         for (0..worker_state_components.data_count) |wsc_index| {
             const worker_state = worker_state_components.data[wsc_index];
             const worker_entity_id = worker_state_components.data_to_entity
@@ -991,6 +975,7 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
             }
         }
 
+        // Update in game time
         switch (tick_granularity) {
             .minute => {
                 game_state.game_time_minute += 1;
@@ -1006,24 +991,21 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
             },
             else => unreachable,
         }
-
         if (game_state.game_time_minute >= 60) {
             game_state.game_time_minute = 0;
             game_state.game_time_hour += 1;
         }
-
         if (game_state.game_time_hour >= 24) {
             game_state.game_time_hour = 0;
             game_state.game_time_day += 1;
         }
-
         if (game_state.game_time_day >= 365) {
             game_state.game_time_day = 0;
             game_state.game_time_year += 1;
         }
-
-        game_state.last_tick_time = platform_api.getTime();
     }
+
+    //- cabarger: Draw
 
     platform_api.beginDrawing();
     platform_api.clearBackground(.{ .r = 0, .g = 0, .b = 0, .a = 255 });
@@ -1054,7 +1036,6 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
             }
         },
         .region => {
-            // NOTE(caleb): I could also do the actual call here...
             const region_data_index: usize = @intCast(
                 game_state.selected_region_p[1] * @as(usize, @intCast(board_dim)) + game_state.selected_region_p[0],
             );
@@ -1166,53 +1147,6 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
         }
     }
 
-    // Draw distance map
-    if (game_state.debug_draw_distance_map) {
-        for (0..1) |wsc_index| { // NOTE(caleb): Make multi maps look ok??
-            const worker_id =
-                worker_state_components.data_to_entity.get(wsc_index) orelse unreachable;
-            const worker_target_tile_p_index = target_tile_p_components.entity_to_data
-                .get(worker_id) orelse unreachable;
-            swpUpdateMap(
-                &game_state.scratch_fba,
-                game_state.sample_walk_map,
-                target_tile_p_components.data[worker_target_tile_p_index][1],
-            ) catch unreachable;
-
-            for (0..board_dim) |grid_row_index| {
-                for (0..board_dim) |grid_col_index| {
-                    if (game_state.sample_walk_map[grid_row_index * board_dim + grid_col_index] < 10) {
-                        const tile_distance =
-                            game_state.sample_walk_map[grid_row_index * board_dim + grid_col_index];
-
-                        const is_selected_tile = (game_state.selected_tile_p[0] == @as(i32, @intCast(grid_col_index)) and
-                            game_state.selected_tile_p[1] == @as(i32, @intCast(grid_row_index)));
-
-                        const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
-                        var projected_p = isoProjGlyph(
-                            platform_api,
-                            .{
-                                .x = @as(f32, @floatFromInt(grid_col_index)),
-                                .y = @as(f32, @floatFromInt(grid_row_index)),
-                            },
-                            @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * game_state.scale_factor),
-                            @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * game_state.scale_factor),
-                            game_state.board_translation,
-                        );
-                        projected_p.y += y_offset;
-                        platform_api.drawTextCodepoint(
-                            game_state.rl_font,
-                            @intCast(tile_distance + '0'),
-                            projected_p,
-                            glyph_size,
-                            .{ .r = 200, .g = 200, .b = 200, .a = 255 },
-                        );
-                    }
-                }
-            }
-        }
-    }
-
     if (game_state.debug_draw_tile_hitboxes) {
         for (0..board_dim) |row_index| {
             for (0..board_dim) |col_index| {
@@ -1241,129 +1175,6 @@ export fn smallPlanetGameCode(platform_api: *platform.PlatformAPI, game_state: *
                     .width = scaled_tile_dim.x,
                     .height = scaled_tile_dim.y / 2.0,
                 }, 1, rl.GREEN);
-            }
-        }
-    }
-
-    if (false) {
-        // Draw entities w/ tile p component NOTE(caleb): This breaks draw order
-        for (0..tile_p_components.data_count) |tpc_index| {
-            const is_selected_tile = false; // FIXME(Caleb)
-
-            const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
-            var projected_p = isoProjGlyph(
-                platform_api,
-                tile_p_components.data[tpc_index],
-                @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * game_state.scale_factor),
-                @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * game_state.scale_factor),
-                game_state.board_translation,
-            );
-            projected_p.y += y_offset;
-
-            const entity_id = tile_p_components.data_to_entity.get(tpc_index) orelse unreachable;
-            if (entity_man.hasComponent(entity_id, .inventory) and !entity_man.hasComponent(entity_id, .worker_state)) {
-                platform_api.drawTextCodepoint(
-                    game_state.rl_font,
-                    @intCast('p'),
-                    projected_p,
-                    glyph_size,
-                    if (is_selected_tile) rl.YELLOW else .{ .r = 200, .g = 200, .b = 0, .a = 255 },
-                );
-            } else if (entity_man.hasComponent(entity_id, .resource_kind)) {
-                const resource_kind_index = resource_kind_components.entity_to_data
-                    .get(entity_id) orelse unreachable;
-                switch (resource_kind_components.data[resource_kind_index]) {
-                    .rock => {
-                        platform_api.drawTextCodepoint(
-                            game_state.rl_font,
-                            @intCast('r'),
-                            projected_p,
-                            glyph_size,
-                            if (is_selected_tile) rl.WHITE else .{ .r = 200, .g = 200, .b = 200, .a = 255 },
-                        );
-                    },
-                    .stick => {
-                        platform_api.drawTextCodepoint(
-                            game_state.rl_font,
-                            @intCast('s'),
-                            projected_p,
-                            glyph_size,
-                            if (is_selected_tile) rl.WHITE else .{ .r = 200, .g = 200, .b = 200, .a = 255 },
-                        );
-                    },
-                    .berry => {
-                        platform_api.drawTextCodepoint(
-                            game_state.rl_font,
-                            @intCast('b'),
-                            projected_p,
-                            glyph_size,
-                            if (is_selected_tile) rl.WHITE else .{ .r = 200, .g = 200, .b = 200, .a = 255 },
-                        );
-                    },
-                }
-            } else if (entity_man.hasComponent(entity_id, .worker_state)) {} // Drawn seperately
-            else unreachable;
-        }
-
-        // HACK(caleb): draw workers seperately.
-        for (0..worker_state_components.data_count) |wsc_index| {
-            const worker_entity_id =
-                worker_state_components.data_to_entity.get(wsc_index) orelse unreachable;
-            const worker_tile_p_index =
-                tile_p_components.entity_to_data.get(worker_entity_id) orelse unreachable;
-            const is_selected_tile = false; // FIXME
-            const y_offset: f32 = if (is_selected_tile) -10.0 else 0.0;
-            var projected_p = isoProjGlyph(
-                platform_api,
-                tile_p_components.data[worker_tile_p_index],
-                @intFromFloat(@as(f32, @floatFromInt(tileset.tile_width)) * game_state.scale_factor),
-                @intFromFloat(@as(f32, @floatFromInt(tileset.tile_height)) * game_state.scale_factor),
-                game_state.board_translation,
-            );
-            projected_p.y += y_offset;
-            platform_api.drawTextCodepoint(game_state.rl_font, @intCast('@'), projected_p, glyph_size, rl.ORANGE);
-        }
-    }
-
-    // Info about selected tile
-    {
-        var offset_y: f32 = 0.0;
-        for (0..tile_p_components.data_count) |tpc_index| {
-            if (false) { //FIXME) {
-                const restore_end_index = game_state.scratch_fba.end_index;
-                defer game_state.scratch_fba.end_index = restore_end_index;
-
-                const entity_id = tile_p_components.data_to_entity
-                    .get(tpc_index) orelse unreachable;
-
-                var infoz: [:0]const u8 = undefined;
-                if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.worker))) {
-                    infoz = fmt.allocPrintZ(
-                        scratch_ally,
-                        "WORKER",
-                        .{},
-                    ) catch unreachable;
-                } else if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.pile))) {
-                    infoz = fmt.allocPrintZ(
-                        scratch_ally,
-                        "PILE",
-                        .{},
-                    ) catch unreachable;
-                } else if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.resource))) {
-                    infoz = fmt.allocPrintZ(
-                        scratch_ally,
-                        "RESOURCE",
-                        .{},
-                    ) catch unreachable;
-                }
-                platform_api.drawTextEx(game_state.rl_font, infoz, .{
-                    .x = 0.0,
-                    .y = @as(f32, @floatFromInt(platform_api.getScreenHeight() - @divFloor(
-                        platform_api.getScreenHeight(),
-                        5,
-                    ))) + offset_y,
-                }, glyph_size, 1.0, rl.WHITE);
-                offset_y += 40.0;
             }
         }
     }

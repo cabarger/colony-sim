@@ -93,33 +93,7 @@ pub fn main() !void {
     var platform_mem = heap.page_allocator.alloc(u8, 1024) catch unreachable;
     var platform_fba = FixedBufferAllocator.init(platform_mem);
 
-    var platform_api = platform.PlatformAPI{
-        .loadTexture = loadTexture,
-        .getFontDefault = getFontDefault,
-        .getMouseWheelMove = getMouseWheelMove,
-        .getMousePosition = getMousePosition,
-        .isMouseButtonDown = isMouseButtonDown,
-        .isKeyDown = isKeyDown,
-        .getScreenWidth = getScreenWidth,
-        .getScreenHeight = getScreenHeight,
-        .matrixInvert = matrixInvert,
-        .drawTexturePro = drawTexturePro,
-        .getMouseDelta = getMouseDelta,
-        .getTime = getTime,
-        .getKeyPressed = getKeyPressed,
-        .beginDrawing = beginDrawing,
-        .clearBackground = clearBackground,
-        .drawLineEx = drawLineEx,
-        .drawTextCodepoint = drawTextCodepoint,
-        .drawTextEx = drawTextEx,
-        .drawRectangleRec = drawRectangleRec,
-        .drawRectangleLinesEx = drawRectangleLinesEx,
-        .endDrawing = endDrawing,
-        .measureText = measureText,
-        .getFPS = getFPS,
-        .loadFont = loadFont,
-        .checkCollisionPointRec = checkCollisionPointRec,
-    };
+    const platform_api = platformAPIInit();
 
     var game_state: platform.GameState = undefined;
     game_state.did_init = false;
@@ -151,8 +125,8 @@ pub fn main() !void {
     try fs.cwd().copyFile(game_code_path, lib_dir, fs.path.basename(active_game_code_path), .{});
 
     var game_code_library: LibraryHandle = try loadLibrary(&platform_fba, active_game_code_path);
-    var game_code_fn_ptr: LibraryFunction = try loadLibraryFunction(&platform_fba, game_code_library, "smallPlanetGameCode");
-    var smallPlanetGameCode: *fn (*platform.PlatformAPI, *platform.GameState) void = @ptrCast(game_code_fn_ptr);
+    var game_code_fn_ptr: LibraryFunction = try loadLibraryFunction(&platform_fba, game_code_library, "spUpdateAndRender");
+    var spUpdateAndRender: *fn (*const platform.PlatformAPI, *platform.GameState) void = @ptrCast(game_code_fn_ptr);
 
     while (!rl.WindowShouldClose()) {
         // Detect new game code lib and load it.
@@ -161,15 +135,45 @@ pub fn main() !void {
             unloadLibrary(game_code_library);
             try fs.cwd().copyFile(game_code_path, lib_dir, fs.path.basename(active_game_code_path), .{});
             game_code_library = try loadLibrary(&platform_fba, active_game_code_path);
-            game_code_fn_ptr = try loadLibraryFunction(&platform_fba, game_code_library, "smallPlanetGameCode");
-            smallPlanetGameCode = @ptrCast(game_code_fn_ptr);
+            game_code_fn_ptr = try loadLibraryFunction(&platform_fba, game_code_library, "spUpdateAndRender");
+            spUpdateAndRender = @ptrCast(game_code_fn_ptr);
             game_code_file_ctime = creation_time_now;
         }
 
         rl.UpdateMusicStream(track1);
-        smallPlanetGameCode(&platform_api, &game_state);
+        spUpdateAndRender(&platform_api, &game_state);
     }
     rl.CloseWindow();
+}
+
+fn platformAPIInit() platform.PlatformAPI {
+    return platform.PlatformAPI{
+        .loadTexture = loadTexture,
+        .getFontDefault = getFontDefault,
+        .getMouseWheelMove = getMouseWheelMove,
+        .getMousePosition = getMousePosition,
+        .isMouseButtonDown = isMouseButtonDown,
+        .isKeyDown = isKeyDown,
+        .getScreenWidth = getScreenWidth,
+        .getScreenHeight = getScreenHeight,
+        .matrixInvert = matrixInvert,
+        .drawTexturePro = drawTexturePro,
+        .getMouseDelta = getMouseDelta,
+        .getTime = getTime,
+        .getKeyPressed = getKeyPressed,
+        .beginDrawing = beginDrawing,
+        .clearBackground = clearBackground,
+        .drawLineEx = drawLineEx,
+        .drawTextCodepoint = drawTextCodepoint,
+        .drawTextEx = drawTextEx,
+        .drawRectangleRec = drawRectangleRec,
+        .drawRectangleLinesEx = drawRectangleLinesEx,
+        .endDrawing = endDrawing,
+        .measureText = measureText,
+        .getFPS = getFPS,
+        .loadFont = loadFont,
+        .checkCollisionPointRec = checkCollisionPointRec,
+    };
 }
 
 fn loadTexture(path: [:0]const u8) rl.Texture {

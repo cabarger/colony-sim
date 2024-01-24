@@ -44,7 +44,7 @@ pub fn init(
     tileset_fba: *FixedBufferAllocator,
     scratch_fba: *FixedBufferAllocator,
     tsj_path: []const u8,
-    platform_api: *platform.PlatformAPI,
+    platform_api: *const platform.PlatformAPI,
 ) !Tileset {
     const tileset_ally = tileset_fba.allocator();
     const scratch_ally = scratch_fba.allocator();
