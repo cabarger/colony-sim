@@ -10,13 +10,18 @@
 //! Small planet game code
 //!
 
-//- TODO(Caleb): Replace raylib Vector2 with builtin @Vector
+//- cabarger: TODO
+// Replace raylib Vector2 with builtin @Vector
+// Pass Inputs/Time as another field to updateAndRender function
+// Tree growth
+// "Domeular" map gen
+// Dynamic textures at world view
 
 const std = @import("std");
 const base = @import("base");
 const third_party = @import("third_party");
 
-const platform = @import("small_planet_platform.zig");
+const sp_platform = @import("sp_platform.zig");
 const ecs = @import("ecs.zig");
 
 const rl = third_party.rl;
@@ -28,7 +33,7 @@ const fs = std.fs;
 const rand = std.rand;
 
 const Tileset = @import("Tileset.zig");
-const Matrix2x2I8 = base_math.Matrix2x2I8;
+const Matrix2x2 = base_math.Matrix2x2;
 
 const ArrayList = std.ArrayList;
 const AutoHashMap = std.AutoHashMap;
@@ -105,30 +110,6 @@ const ResourceKind = enum(usize) {
 
 // Raylib vector math
 
-inline fn toRaylibVector2(comptime T: type, vec: @Vector(2, T)) rl.Vector2 {
-    return rl.Vector2{ .x = vec[0], .y = vec[1] };
-}
-
-inline fn vector2Subtract(lhs: rl.Vector2, rhs: rl.Vector2) rl.Vector2 {
-    return rl.Vector2{
-        .x = lhs.x - rhs.x,
-        .y = lhs.y - rhs.y,
-    };
-}
-
-inline fn vector2Add(lhs: rl.Vector2, rhs: rl.Vector2) rl.Vector2 {
-    return rl.Vector2{
-        .x = lhs.x + rhs.x,
-        .y = lhs.y + rhs.y,
-    };
-}
-
-inline fn vector2Equals(lhs: rl.Vector2, rhs: rl.Vector2) c_int {
-    if (lhs.x == rhs.x and lhs.y == rhs.y)
-        return 0;
-    return 1;
-}
-
 inline fn vector2DistanceU16(v1: @Vector(2, u16), v2: @Vector(2, u16)) f32 {
     const result = @sqrt(@as(f32, @floatFromInt((v1[0] - v2[0]) * (v1[0] - v2[0]) + (v1[1] - v2[1]) * (v1[1] - v2[1]))));
     return result;
@@ -191,13 +172,13 @@ fn swpUpdateMap(
 // NOTE(caleb): This by itself isn't enough for a 90 board rotation
 // I subtract board_dim - 1 to the y component prior to the multiply.
 // The de-rotation adds board_dim - 1 after the multiply.
-const rotate_once_matrix = Matrix2x2I8{
+const rotate_once_matrix = Matrix2x2(i8){
     .m0 = 0,
     .m1 = 1,
     .m2 = -1,
     .m3 = 0,
 };
-const derotate_once_matrix = Matrix2x2I8.inverse(rotate_once_matrix);
+const derotate_once_matrix = Matrix2x2(i8).inverse(rotate_once_matrix);
 
 // NOTE(caleb): If I wanted to save time I could also precompute rotation matrices:
 // (and their inverses) twice and thrice.
@@ -207,85 +188,81 @@ const derotate_once_matrix = Matrix2x2I8.inverse(rotate_once_matrix);
 inline fn canonicalTileP(tile_p: @Vector(2, i8), draw_rot_state: DrawRotState) @Vector(2, i8) {
     var result = tile_p;
     for (0..@intFromEnum(draw_rot_state)) |_| {
-        result = Matrix2x2I8.vectorMultiply(derotate_once_matrix, result) +
+        result = Matrix2x2(i8).vectorMultiply(derotate_once_matrix, result) +
             @Vector(2, i8){ 0, @intCast(board_dim - 1) };
     }
     return result;
 }
 
-inline fn isoProjMatrix() rl.Matrix {
-    var result = mem.zeroes(rl.Matrix);
-    result.m0 = 0.5;
-    result.m1 = 0.25;
-    result.m4 = -0.5;
-    result.m5 = 0.25;
-    result.m10 = 1.0;
-    result.m15 = 1.0;
-    return result;
+inline fn isoProjMatrix() Matrix2x2(f32) {
+    return Matrix2x2(f32){
+        .m0 = 0.5,
+        .m1 = 0.25,
+        .m2 = -0.5,
+        .m3 = 0.25,
+    };
 }
 
+const iso_proj_matrix = isoProjMatrix();
+
 fn screenSpaceBoardHeight(tile_width_px: u16, tile_height_px: u16) f32 {
-    return matrixVector2Multiply(
-        isoProjMatrix(),
-        .{
-            .x = board_dim * @as(f32, @floatFromInt(tile_width_px)),
-            .y = board_dim * @as(f32, @floatFromInt(tile_height_px)),
-        },
-    ).y + @as(f32, @floatFromInt(tile_height_px)) / 2.0;
+    return isoProjMatrix().vectorMultiply(.{
+        board_dim * @as(f32, @floatFromInt(tile_width_px)),
+        board_dim * @as(f32, @floatFromInt(tile_height_px)),
+    })[1] + @as(f32, @floatFromInt(tile_height_px)) / 2.0;
 }
 
 fn boardOffset(
-    platform_api: *const platform.PlatformAPI,
+    platform_api: *const sp_platform.PlatformAPI,
     tile_width_px: u16,
     tile_height_px: u16,
-) rl.Vector2 {
-    return rl.Vector2{
-        .x = @as(f32, @floatFromInt(platform_api.getScreenWidth())) / 2.0 - @as(f32, @floatFromInt(tile_width_px)) / 2.0,
-        .y = (@as(f32, @floatFromInt(platform_api.getScreenHeight())) - screenSpaceBoardHeight(tile_width_px, tile_height_px)) / 2.0,
+) @Vector(2, f32) {
+    return .{
+        @as(f32, @floatFromInt(platform_api.getScreenWidth())) / 2.0 - @as(f32, @floatFromInt(tile_width_px)) / 2.0,
+        (@as(f32, @floatFromInt(platform_api.getScreenHeight())) - screenSpaceBoardHeight(tile_width_px, tile_height_px)) / 2.0,
     };
 }
 
 fn isoInvert(
-    platform_api: *const platform.PlatformAPI,
-    p: rl.Vector2,
+    platform_api: *const sp_platform.PlatformAPI,
+    p: @Vector(2, f32),
     tile_width_px: u16,
     tile_height_px: u16,
-    board_translation: rl.Vector2,
+    board_translation: @Vector(2, f32),
 ) rl.Vector2 {
-    const untranslated_p = vector2Subtract(p, board_translation);
-    const unshifted_p = vector2Subtract(untranslated_p, boardOffset(platform_api, tile_width_px, tile_height_px));
-    const invert_proj_mat = platform_api.matrixInvert(isoProjMatrix());
-    return matrixVector2Multiply(invert_proj_mat, unshifted_p);
+    const untranslated_p = p - board_translation;
+    const unshifted_p = untranslated_p - boardOffset(platform_api, tile_width_px, tile_height_px);
+    return @bitCast(iso_proj_matrix.inverse().vectorMultiply(unshifted_p));
 }
 
 fn isoProj(
-    platform_api: *const platform.PlatformAPI,
+    platform_api: *const sp_platform.PlatformAPI,
     p: rl.Vector2,
     tile_width_px: u16,
     tile_height_px: u16,
-    board_translation: rl.Vector2,
+    board_translation: @Vector(2, f32),
 ) rl.Vector2 {
-    const projected_p = matrixVector2Multiply(isoProjMatrix(), p);
-    const shifted_p = vector2Add(projected_p, boardOffset(platform_api, tile_width_px, tile_height_px));
-    const translated_p = vector2Add(shifted_p, board_translation);
-    return translated_p;
+    const projected_p = isoProjMatrix().vectorMultiply(@bitCast(p));
+    const shifted_p = projected_p + boardOffset(platform_api, tile_width_px, tile_height_px);
+    const translated_p = shifted_p + board_translation;
+    return @bitCast(translated_p);
 }
 
 fn isoProjGlyph(
-    platform_api: *const platform.PlatformAPI,
+    platform_api: *const sp_platform.PlatformAPI,
     p: rl.Vector2,
     tile_width_px: u16,
     tile_height_px: u16,
-    board_translation: rl.Vector2,
+    board_translation: @Vector(2, f32),
 ) rl.Vector2 {
-    return vector2Add(isoProj(platform_api, p, tile_width_px, tile_height_px, board_translation), .{
-        .x = 0.0, //glyph_size / 2 + glyph_size / 3,
-        .y = 0.0,
+    return @bitCast(@as(@Vector(2, f32), @bitCast(isoProj(platform_api, p, tile_width_px, tile_height_px, board_translation))) + @Vector(2, f32){
+        0.0, //glyph_size / 2 + glyph_size / 3,
+        0.0,
     });
 }
 
 fn drawTile(
-    platform_api: *const platform.PlatformAPI,
+    platform_api: *const sp_platform.PlatformAPI,
     tileset: *const Tileset,
     tile_id: u16,
     dest_pos: rl.Vector2,
@@ -313,7 +290,7 @@ fn drawTile(
 
 /// NOTE(Caleb): WTF chill with the params.
 fn drawTileFromCoords(
-    platform_api: *const platform.PlatformAPI,
+    platform_api: *const sp_platform.PlatformAPI,
     tile_id: u8,
     height_map: []const i16,
     tileset: *const Tileset,
@@ -322,7 +299,7 @@ fn drawTileFromCoords(
     dest_row_index: usize,
     dest_col_index: usize,
     scaled_tile_dim: rl.Vector2,
-    board_translation: rl.Vector2,
+    board_translation: @Vector(2, f32),
     selected_tile_p: @Vector(2, i8),
     draw_3d: bool,
     scale_factor: f32,
@@ -360,7 +337,7 @@ fn drawTileFromCoords(
 }
 
 fn drawWorldTileFromCoords(
-    platform_api: *const platform.PlatformAPI,
+    platform_api: *const sp_platform.PlatformAPI,
     world: *const World,
     tileset: *const Tileset,
     source_row_index: usize,
@@ -368,7 +345,7 @@ fn drawWorldTileFromCoords(
     dest_row_index: usize,
     dest_col_index: usize,
     scaled_tile_dim: rl.Vector2,
-    board_translation: rl.Vector2,
+    board_translation: @Vector(2, f32),
     selected_tile_p: @Vector(2, i8),
     draw_3d: bool,
     scale_factor: f32,
@@ -378,7 +355,7 @@ fn drawWorldTileFromCoords(
 }
 
 fn drawRegionTileFromCoords(
-    platform_api: *const platform.PlatformAPI,
+    platform_api: *const sp_platform.PlatformAPI,
     region_data: *const RegionData,
     tileset: *const Tileset,
     source_row_index: usize,
@@ -386,7 +363,7 @@ fn drawRegionTileFromCoords(
     dest_row_index: usize,
     dest_col_index: usize,
     scaled_tile_dim: rl.Vector2,
-    board_translation: rl.Vector2,
+    board_translation: @Vector(2, f32),
     selected_tile_p: @Vector(2, i8),
     draw_3d: bool,
     scale_factor: f32,
@@ -550,7 +527,7 @@ inline fn validCoords(coords: @Vector(2, i8)) bool {
     return result;
 }
 
-export fn spUpdateAndRender(platform_api: *const platform.PlatformAPI, game_state: *platform.GameState) void {
+export fn spUpdateAndRender(platform_api: *const sp_platform.PlatformAPI, game_state: *sp_platform.GameState) void {
     const perm_ally = game_state.perm_fba.allocator();
     const scratch_ally = game_state.scratch_fba.allocator();
 
@@ -650,7 +627,7 @@ export fn spUpdateAndRender(platform_api: *const platform.PlatformAPI, game_stat
         game_state.draw_3d = true;
         game_state.scale_factor = 2.0;
 
-        game_state.board_translation = rl.Vector2{ .x = 0, .y = 0 };
+        game_state.board_translation = @Vector(2, f32){ 0.0, 0.0 };
 
         game_state.draw_rot_state = @intFromEnum(DrawRotState.rotate_nonce);
 
@@ -692,10 +669,12 @@ export fn spUpdateAndRender(platform_api: *const platform.PlatformAPI, game_stat
     };
 
     const new_mouse_p = platform_api.getMousePosition();
-    const mouse_moved = (vector2Equals(game_state.mouse_p, new_mouse_p) != 0);
+    const mouse_moved = @reduce(.And, @as(@Vector(2, f32), @bitCast(game_state.mouse_p)) != @as(@Vector(2, f32), @bitCast(new_mouse_p)));
     game_state.mouse_p = new_mouse_p;
 
     if (mouse_moved) {
+        //- cabarger: TODO Iterate over tiles from the bottom right to top left, this way
+        // if two tiles overlap the selected tile is allways the one in front.
         if (game_state.draw_3d) {
             game_state.selected_tile_p = .{ -1, -1 };
             outer: for (0..board_dim) |row_index| {
@@ -725,8 +704,7 @@ export fn spUpdateAndRender(platform_api: *const platform.PlatformAPI, game_stat
                         .width = scaled_tile_dim.x,
                         .height = scaled_tile_dim.y / 2.0,
                     })) {
-                        game_state.selected_tile_p[0] = @intCast(col_index);
-                        game_state.selected_tile_p[1] = @intCast(row_index);
+                        game_state.selected_tile_p = @Vector(2, i8){ @intCast(col_index), @intCast(row_index) };
                         break :outer;
                     }
                 }
@@ -734,7 +712,7 @@ export fn spUpdateAndRender(platform_api: *const platform.PlatformAPI, game_stat
         } else {
             const deprojected_mouse_p = isoInvert(
                 platform_api,
-                vector2Subtract(game_state.mouse_p, .{ .x = scaled_tile_dim.x / 2.0, .y = 0.0 }),
+                @as(@Vector(2, f32), @bitCast(game_state.mouse_p)) - @Vector(2, f32){ scaled_tile_dim.x / 2.0, 0.0 },
                 @intFromFloat(scaled_tile_dim.x),
                 @intFromFloat(scaled_tile_dim.y),
                 game_state.board_translation,
@@ -745,7 +723,7 @@ export fn spUpdateAndRender(platform_api: *const platform.PlatformAPI, game_stat
     }
 
     if (platform_api.isMouseButtonDown(rl.MOUSE_BUTTON_RIGHT))
-        game_state.board_translation = vector2Add(game_state.board_translation, platform_api.getMouseDelta());
+        game_state.board_translation += @bitCast(platform_api.getMouseDelta());
 
     var key_pressed = platform_api.getKeyPressed();
     while (key_pressed != 0) { //- cabarger: Handle input
@@ -1030,7 +1008,7 @@ export fn spUpdateAndRender(platform_api: *const platform.PlatformAPI, game_stat
                         dest_row_index,
                         dest_col_index,
                         scaled_tile_dim,
-                        game_state.board_translation,
+                        @bitCast(game_state.board_translation),
                         game_state.selected_tile_p,
                         game_state.draw_3d,
                         game_state.scale_factor,
@@ -1056,7 +1034,7 @@ export fn spUpdateAndRender(platform_api: *const platform.PlatformAPI, game_stat
                         dest_row_index,
                         dest_col_index,
                         scaled_tile_dim,
-                        game_state.board_translation,
+                        @bitCast(game_state.board_translation),
                         game_state.selected_tile_p,
                         game_state.draw_3d,
                         game_state.scale_factor,
@@ -1135,7 +1113,7 @@ export fn spUpdateAndRender(platform_api: *const platform.PlatformAPI, game_stat
                     },
                     @intFromFloat(scaled_tile_dim.x),
                     @intFromFloat(scaled_tile_dim.y),
-                    game_state.board_translation,
+                    @bitCast(game_state.board_translation),
                 );
                 if (game_state.draw_3d)
                     projected_p.y -= @as(f32, @floatFromInt(height)) * (scaled_tile_dim.y / 2.0);
@@ -1169,7 +1147,7 @@ export fn spUpdateAndRender(platform_api: *const platform.PlatformAPI, game_stat
                     },
                     @intFromFloat(scaled_tile_dim.x),
                     @intFromFloat(scaled_tile_dim.y),
-                    game_state.board_translation,
+                    @bitCast(game_state.board_translation),
                 );
                 projected_p.y -= @as(f32, @floatFromInt(height)) * (scaled_tile_dim.y / 2.0);
                 platform_api.drawRectangleLinesEx(.{

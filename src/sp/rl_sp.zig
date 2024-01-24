@@ -13,7 +13,8 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const third_party = @import("third_party");
-const platform = @import("small_planet_platform.zig");
+
+const sp_platform = @import("sp_platform.zig");
 
 const rl = third_party.rl;
 const fs = std.fs;
@@ -96,7 +97,7 @@ pub fn main() !void {
 
     const platform_api = platformAPIInit();
 
-    var game_state: platform.GameState = undefined;
+    var game_state: sp_platform.GameState = undefined;
     game_state.did_init = false;
     game_state.perm_fba = perm_fba;
     game_state.scratch_fba = scratch_fba;
@@ -127,7 +128,7 @@ pub fn main() !void {
 
     var game_code_library: LibraryHandle = try loadLibrary(&platform_fba, active_game_code_path);
     var game_code_fn_ptr: LibraryFunction = try loadLibraryFunction(&platform_fba, game_code_library, "spUpdateAndRender");
-    var spUpdateAndRender: *fn (*const platform.PlatformAPI, *platform.GameState) void = @ptrCast(game_code_fn_ptr);
+    var spUpdateAndRender: *fn (*const sp_platform.PlatformAPI, *sp_platform.GameState) void = @ptrCast(game_code_fn_ptr);
 
     while (!rl.WindowShouldClose()) {
         // Detect new game code lib and load it.
@@ -147,8 +148,8 @@ pub fn main() !void {
     rl.CloseWindow();
 }
 
-fn platformAPIInit() platform.PlatformAPI {
-    return platform.PlatformAPI{
+fn platformAPIInit() sp_platform.PlatformAPI {
+    return sp_platform.PlatformAPI{
         .loadTexture = loadTexture,
         .getFontDefault = getFontDefault,
         .getMouseWheelMove = getMouseWheelMove,

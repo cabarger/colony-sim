@@ -16,7 +16,7 @@ pub fn build(b: *std.Build) void {
     if (build_game_code) {
         const game_code = b.addSharedLibrary(.{
             .name = "game-code", // NOTE(caleb): Explain the tmp prefix so future me knows why I did things this way.
-            .root_source_file = .{ .path = "src/small_planet/small_planet_game_code.zig" },
+            .root_source_file = .{ .path = "src/sp/sp_game_code.zig" },
             .target = target,
             .optimize = optimize,
         });
@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) void {
     if (build_platform_code) {
         const platform_code = b.addExecutable(.{
             .name = "small-planet",
-            .root_source_file = .{ .path = "src/small_planet/rl_small_planet.zig" },
+            .root_source_file = .{ .path = "src/sp/rl_sp.zig" },
             .target = target,
             .optimize = optimize,
         });

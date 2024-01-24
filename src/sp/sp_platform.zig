@@ -97,10 +97,7 @@ pub const GameState = struct {
     draw_3d: bool,
     scale_factor: f32,
 
-    board_translation: rl.Vector2,
-
-    // NOTE(caleb): Determines draw order of board tiles, giving the effect
-    // of a rotation.
+    board_translation: @Vector(2, f32),
     draw_rot_state: u8,
 
     rl_font: rl.Font,
