@@ -12,8 +12,13 @@ const std = @import("std");
 
 const meta = std.meta;
 
-pub inline fn clampf32(value: f32, min: f32, max: f32) f32 {
+pub inline fn clampF32(value: f32, min: f32, max: f32) f32 {
     return @max(min, @min(max, value));
+}
+
+pub inline fn vector2DistanceU16(v1: @Vector(2, u16), v2: @Vector(2, u16)) f32 {
+    const result = @sqrt(@as(f32, @floatFromInt((v1[0] - v2[0]) * (v1[0] - v2[0]) + (v1[1] - v2[1]) * (v1[1] - v2[1]))));
+    return result;
 }
 
 pub fn Matrix2x2(comptime T: type) type {
@@ -28,7 +33,7 @@ pub fn Matrix2x2(comptime T: type) type {
         pub fn inverse(m: Self) Self {
             comptime if (!meta.trait.isSignedInt(T) and !meta.trait.isFloat(T)) {
                 @compileError("Wrong type");
-            }
+            };
             const is_float: bool = comptime meta.trait.isFloat(T);
 
             var determinant: f32 = if (is_float)

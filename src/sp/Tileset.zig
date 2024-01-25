@@ -9,35 +9,27 @@
 //!
 
 const std = @import("std");
+
 const third_party = @import("third_party");
 const platform = @import("sp_platform.zig");
+const sp_map = @import("sp_map.zig");
 
 const rl = third_party.rl;
 const fs = std.fs;
 
 const AutoHashMap = std.AutoHashMap;
 const FixedBufferAllocator = std.heap.FixedBufferAllocator;
+const TileId = sp_map.TileId;
 
 const Tileset = @This();
-
-// TODO(caleb): Rename me (this is an enum over all sprites)
-pub const TileType = enum(u8) {
-    soil = 0,
-    rock,
-    water,
-    sand,
-    tree,
-    plains,
-    forest,
-};
 
 columns: u16,
 tile_count: u16,
 tile_width: u16,
 tile_height: u16,
 
-tile_id_to_type: AutoHashMap(u16, TileType),
-tile_type_to_id: AutoHashMap(TileType, u16),
+tile_id_to_type: AutoHashMap(u16, TileId), //- cabarger: FIXME naming???
+tile_type_to_id: AutoHashMap(TileId, u16),
 
 texture: rl.Texture,
 
@@ -81,8 +73,8 @@ pub fn init(
         .tile_width = @intCast(parsed_ts_data.object.get("tilewidth").?.integer),
         .tile_height = @intCast(parsed_ts_data.object.get("tileheight").?.integer),
         .tile_count = @intCast(parsed_ts_data.object.get("tilecount").?.integer),
-        .tile_id_to_type = AutoHashMap(u16, TileType).init(tileset_ally),
-        .tile_type_to_id = AutoHashMap(TileType, u16).init(tileset_ally),
+        .tile_id_to_type = AutoHashMap(u16, TileId).init(tileset_ally),
+        .tile_type_to_id = AutoHashMap(TileId, u16).init(tileset_ally),
     };
     try ts.tile_id_to_type.ensureTotalCapacity(ts.tile_count);
     try ts.tile_type_to_id.ensureTotalCapacity(ts.tile_count);
@@ -92,7 +84,7 @@ pub fn init(
     for (tile_data.items) |tile| {
         const tile_id: u16 = @intCast(tile.object.get("id").?.integer);
         const tile_type_str = tile.object.get("type").?.string;
-        var tile_type: TileType = undefined;
+        var tile_type: TileId = undefined;
         if (std.mem.eql(u8, tile_type_str, "rock")) {
             tile_type = .rock;
         } else if (std.mem.eql(u8, tile_type_str, "soil")) {
