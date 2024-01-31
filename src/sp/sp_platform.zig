@@ -10,7 +10,9 @@
 
 const std = @import("std");
 const third_party = @import("third_party");
+const base = @import("base");
 
+const base_thread_context = base.base_thread_context;
 const rl = third_party.rl;
 const math = std.math;
 const fmt = std.fmt;
@@ -19,6 +21,12 @@ const fs = std.fs;
 const rand = std.rand;
 
 const FixedBufferAllocator = std.heap.FixedBufferAllocator;
+
+pub const sp_update_and_render_sig = *fn (
+    platform_api: *const PlatformAPI,
+    game_state: *GameState,
+    tctx: *base_thread_context.TCTX,
+) void;
 
 pub const PlatformAPI = struct {
     loadTexture: *const fn ([:0]const u8) rl.Texture,

@@ -26,12 +26,13 @@ const sp_render = @import("sp_render.zig");
 const ecs = @import("ecs.zig");
 
 const rl = third_party.rl;
-const base_math = base.base_math;
 const math = std.math;
 const fmt = std.fmt;
 const mem = std.mem;
 const fs = std.fs;
 const rand = std.rand;
+const base_math = base.base_math;
+const base_thread_context = base.base_thread_context;
 
 const Tileset = @import("Tileset.zig");
 const Matrix2x2 = base_math.Matrix2x2;
@@ -49,7 +50,12 @@ const assert = std.debug.assert;
 
 const board_dim = sp_map.board_dim;
 
-export fn spUpdateAndRender(platform_api: *const sp_platform.PlatformAPI, game_state: *sp_platform.GameState) void {
+export fn spUpdateAndRender(
+    platform_api: *const sp_platform.PlatformAPI,
+    game_state: *sp_platform.GameState,
+    tctx: *base_thread_context.TCTX,
+) void {
+    _ = tctx;
     const perm_ally = game_state.perm_fba.allocator();
     const scratch_ally = game_state.scratch_fba.allocator();
 

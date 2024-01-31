@@ -13,9 +13,10 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const third_party = @import("third_party");
+const base = @import("base");
 
 const sp_platform = @import("sp_platform.zig");
-
+const base_thread_context = base.base_thread_context;
 const rl = third_party.rl;
 const fs = std.fs;
 const heap = std.heap;
@@ -23,6 +24,91 @@ const heap = std.heap;
 const FixedBufferAllocator = heap.FixedBufferAllocator;
 
 pub extern "c" fn dlerror() ?[*:0]const u8;
+
+pub fn main() !void {
+    // Window/Audio init
+    rl.InitWindow(800, 600, "small-planet");
+    rl.SetWindowState(rl.FLAG_WINDOW_RESIZABLE);
+    rl.InitAudioDevice();
+
+    var tctx: base_thread_context.TCTX = undefined;
+    base_thread_context.tctxInitAndEquip(&tctx);
+
+    //- cabarger: Platform memory
+    var platform_fba: FixedBufferAllocator = undefined;
+    {
+        var arena = base_thread_context.tctxGetScratch(null, 0) orelse unreachable;
+        const ally = arena.allocator();
+        var platform_mem = ally.alloc(u8, 1024) catch unreachable;
+        platform_fba = FixedBufferAllocator.init(platform_mem);
+    }
+
+    //- cabarger: Game memory
+    var game_state: sp_platform.GameState = undefined;
+    {
+        var arena = base_thread_context.tctxGetScratch(null, 0) orelse unreachable;
+        const ally = arena.allocator();
+        var perm_mem = ally.alloc(u8, 1024 * 1024 * 5) catch unreachable;
+        var scratch_mem = ally.alloc(u8, 1024 * 1024) catch unreachable;
+
+        //- NOTE(cabarger): Game state get's initialized in game code but these
+        // three fields MUST be set here.
+        game_state.perm_fba = FixedBufferAllocator.init(perm_mem);
+        game_state.scratch_fba = FixedBufferAllocator.init(scratch_mem);
+        game_state.did_init = false;
+    }
+
+    const platform_api = platformAPIInit();
+
+    const track1 = rl.LoadMusicStream("assets/music/track_1.wav");
+    rl.PlayMusicStream(track1);
+    rl.SetMusicVolume(track1, 0.0);
+
+    const rel_lib_path = "./zig-out/lib/";
+    const active_game_code_path = try fs.path.join(
+        platform_fba.allocator(),
+        &[_][]const u8{
+            rel_lib_path,
+            if (builtin.os.tag == .windows) "active-game-code.dll" else "libactive-game-code.so",
+        },
+    );
+    const game_code_path = try fs.path.join(
+        platform_fba.allocator(),
+        &[_][]const u8{
+            rel_lib_path,
+            if (builtin.os.tag == .windows) "game-code.dll" else "libgame-code.so",
+        },
+    );
+
+    var game_code_file_ctime = (try fs.cwd().statFile(game_code_path)).ctime;
+    const lib_dir = try fs.cwd().openDir(rel_lib_path, .{});
+    try fs.cwd().copyFile(game_code_path, lib_dir, fs.path.basename(active_game_code_path), .{});
+
+    var game_code_library: LibraryHandle = try loadLibrary(&platform_fba, active_game_code_path);
+    var game_code_fn_ptr: LibraryFunction = try loadLibraryFunction(&platform_fba, game_code_library, "spUpdateAndRender");
+    var spUpdateAndRender: sp_platform.sp_update_and_render_sig = @ptrCast(game_code_fn_ptr);
+
+    while (!rl.WindowShouldClose()) {
+        // Detect new game code lib and load it.
+        const creation_time_now = (try std.fs.cwd().statFile(game_code_path)).ctime;
+        if (creation_time_now != game_code_file_ctime) {
+            unloadLibrary(game_code_library);
+            try fs.cwd().copyFile(game_code_path, lib_dir, fs.path.basename(active_game_code_path), .{});
+            game_code_library = try loadLibrary(&platform_fba, active_game_code_path);
+            game_code_fn_ptr = try loadLibraryFunction(&platform_fba, game_code_library, "spUpdateAndRender");
+            spUpdateAndRender = @ptrCast(game_code_fn_ptr);
+            game_code_file_ctime = creation_time_now;
+        }
+
+        rl.UpdateMusicStream(track1);
+        spUpdateAndRender(
+            &platform_api,
+            &game_state,
+            base_thread_context.tctxGetEquipped(),
+        );
+    }
+    rl.CloseWindow();
+}
 
 const LibraryHandle = if (builtin.os.tag == .windows) std.os.windows.HMODULE else *anyopaque;
 fn loadLibrary(scratch_fba: *FixedBufferAllocator, path: []const u8) !LibraryHandle {
@@ -78,74 +164,6 @@ fn loadLibraryFunction(
         },
     }
     return result;
-}
-
-pub fn main() !void {
-    // Window/Audio init
-    rl.InitWindow(800, 600, "small-planet");
-    rl.SetWindowState(rl.FLAG_WINDOW_RESIZABLE);
-    rl.InitAudioDevice();
-
-    var perm_mem = heap.page_allocator.alloc(u8, 1024 * 1024 * 5) catch unreachable;
-    var perm_fba = FixedBufferAllocator.init(perm_mem);
-
-    var scratch_mem = heap.page_allocator.alloc(u8, 1024 * 1024) catch unreachable;
-    var scratch_fba = FixedBufferAllocator.init(scratch_mem);
-
-    var platform_mem = heap.page_allocator.alloc(u8, 1024) catch unreachable;
-    var platform_fba = FixedBufferAllocator.init(platform_mem);
-
-    const platform_api = platformAPIInit();
-
-    var game_state: sp_platform.GameState = undefined;
-    game_state.did_init = false;
-    game_state.perm_fba = perm_fba;
-    game_state.scratch_fba = scratch_fba;
-
-    const track1 = rl.LoadMusicStream("assets/music/track_1.wav");
-    rl.PlayMusicStream(track1);
-    rl.SetMusicVolume(track1, 0.0);
-
-    const rel_lib_path = "./zig-out/lib/";
-    const active_game_code_path = try fs.path.join(
-        platform_fba.allocator(),
-        &[_][]const u8{
-            rel_lib_path,
-            if (builtin.os.tag == .windows) "active-game-code.dll" else "libactive-game-code.so",
-        },
-    );
-    const game_code_path = try fs.path.join(
-        platform_fba.allocator(),
-        &[_][]const u8{
-            rel_lib_path,
-            if (builtin.os.tag == .windows) "game-code.dll" else "libgame-code.so",
-        },
-    );
-
-    var game_code_file_ctime = (try fs.cwd().statFile(game_code_path)).ctime;
-    const lib_dir = try fs.cwd().openDir(rel_lib_path, .{});
-    try fs.cwd().copyFile(game_code_path, lib_dir, fs.path.basename(active_game_code_path), .{});
-
-    var game_code_library: LibraryHandle = try loadLibrary(&platform_fba, active_game_code_path);
-    var game_code_fn_ptr: LibraryFunction = try loadLibraryFunction(&platform_fba, game_code_library, "spUpdateAndRender");
-    var spUpdateAndRender: *fn (*const sp_platform.PlatformAPI, *sp_platform.GameState) void = @ptrCast(game_code_fn_ptr);
-
-    while (!rl.WindowShouldClose()) {
-        // Detect new game code lib and load it.
-        const creation_time_now = (try std.fs.cwd().statFile(game_code_path)).ctime;
-        if (creation_time_now != game_code_file_ctime) {
-            unloadLibrary(game_code_library);
-            try fs.cwd().copyFile(game_code_path, lib_dir, fs.path.basename(active_game_code_path), .{});
-            game_code_library = try loadLibrary(&platform_fba, active_game_code_path);
-            game_code_fn_ptr = try loadLibraryFunction(&platform_fba, game_code_library, "spUpdateAndRender");
-            spUpdateAndRender = @ptrCast(game_code_fn_ptr);
-            game_code_file_ctime = creation_time_now;
-        }
-
-        rl.UpdateMusicStream(track1);
-        spUpdateAndRender(&platform_api, &game_state);
-    }
-    rl.CloseWindow();
 }
 
 fn platformAPIInit() sp_platform.PlatformAPI {
