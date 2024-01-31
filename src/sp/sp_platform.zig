@@ -14,6 +14,7 @@ const base = @import("base");
 
 const base_thread_context = base.base_thread_context;
 const rl = third_party.rl;
+const bit_set = std.bit_set;
 const math = std.math;
 const fmt = std.fmt;
 const mem = std.mem;
@@ -29,7 +30,45 @@ pub const sp_update_and_render_sig = *fn (
     tctx: *base_thread_context.TCTX,
 ) void;
 
-pub const GameInput = struct {};
+pub const GameInput = struct {
+    pub const MouseInput = struct {
+        wheel_move: f32,
+        p: @Vector(2, f32),
+        left_click: bool,
+        right_click: bool,
+    };
+
+    pub const KeyPressed = enum(u8) {
+        r = 0,
+        h,
+        e,
+
+        f1,
+        f2,
+        f3,
+        f4,
+
+        left_shift,
+        enter,
+        space,
+
+        kp_6,
+        kp_4,
+
+        up,
+        down,
+        right,
+        left,
+    };
+
+    pub const KeyInput = struct {};
+
+    mouse_input: MouseInput,
+    last_mouse_input: MouseInput,
+
+    key_input: KeyInput,
+    last_key_input: KeyInput,
+};
 
 pub const PlatformAPI = struct {
     loadTexture: *const fn ([:0]const u8) rl.Texture,
