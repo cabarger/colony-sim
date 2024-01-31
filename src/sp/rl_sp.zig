@@ -59,6 +59,8 @@ pub fn main() !void {
 
     const platform_api = platformAPIInit();
 
+    var game_input: GameInput = undefined;
+
     const track1 = rl.LoadMusicStream("assets/music/track_1.wav");
     rl.PlayMusicStream(track1);
     rl.SetMusicVolume(track1, 1.0);
@@ -104,6 +106,7 @@ pub fn main() !void {
         spUpdateAndRender(
             &platform_api,
             &game_state,
+            &game_input,
             base_thread_context.tctxGetEquipped(),
         );
     }

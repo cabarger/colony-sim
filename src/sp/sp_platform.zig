@@ -25,8 +25,11 @@ const FixedBufferAllocator = std.heap.FixedBufferAllocator;
 pub const sp_update_and_render_sig = *fn (
     platform_api: *const PlatformAPI,
     game_state: *GameState,
+    game_input: *GameInput,
     tctx: *base_thread_context.TCTX,
 ) void;
+
+pub const GameInput = struct {};
 
 pub const PlatformAPI = struct {
     loadTexture: *const fn ([:0]const u8) rl.Texture,

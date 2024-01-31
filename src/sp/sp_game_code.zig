@@ -47,11 +47,10 @@ const Random = rand.Random;
 const FixedBufferAllocator = std.heap.FixedBufferAllocator;
 
 const assert = std.debug.assert;
-
 const board_dim = sp_map.board_dim;
 
 ////////////////////////////////
-//- cabarger: Globals
+//- cabarger: Game code globals
 
 var entity_man: *ecs.EntityManager = undefined;
 var tile_p_components: *ecs.ComponentArray(@Vector(2, u16)) = undefined;
@@ -65,10 +64,11 @@ var world: *World = undefined;
 export fn spUpdateAndRender(
     platform_api: *const sp_platform.PlatformAPI,
     game_state: *sp_platform.GameState,
+    game_input: *sp_platform.GameInput,
     tctx: *base_thread_context.TCTX,
 ) void {
     _ = tctx;
-    const scratch_ally = game_state.scratch_fba.allocator();
+    _ = game_input;
 
     //- cabarger: This is done exactly ONCE on the first game code load.
     if (!game_state.did_init)
@@ -84,6 +84,9 @@ export fn spUpdateAndRender(
     var tick_granularity: sp_sim.TickGranularity = @enumFromInt(game_state.tick_granularity);
     var view_mode: sp_map.ViewMode = @enumFromInt(game_state.view_mode);
     var draw_rot_state: sp_render.DrawRotState = @enumFromInt(game_state.draw_rot_state);
+
+    ////////////////////////////////
+    //- cabarger: Update
 
     const mouse_wheel_move = platform_api.getMouseWheelMove();
     if (mouse_wheel_move != 0) {
@@ -414,242 +417,57 @@ export fn spUpdateAndRender(
         }
     }
 
-    //- cabarger: Draw
+    ////////////////////////////////
+    //- cabarger: Render
 
     platform_api.beginDrawing();
-    platform_api.clearBackground(.{ .r = 0, .g = 0, .b = 0, .a = 255 });
+    platform_api.clearBackground(.{ .r = 10, .g = 10, .b = 10, .a = 255 });
 
-    // Draw board
-    switch (view_mode) {
-        .world => {
-            for (0..board_dim) |dest_row_index| {
-                for (0..board_dim) |dest_col_index| {
-                    var source_tile_coords: @Vector(2, usize) = @intCast(
-                        sp_map.canonicalTileP(@intCast(@Vector(2, usize){ dest_col_index, dest_row_index }), draw_rot_state),
-                    );
-                    sp_render.drawWorldTileFromCoords(
-                        platform_api,
-                        world,
-                        tileset,
-                        source_tile_coords[1],
-                        source_tile_coords[0],
-                        dest_row_index,
-                        dest_col_index,
-                        scaled_tile_dim,
-                        @bitCast(game_state.board_translation),
-                        game_state.selected_tile_p,
-                        game_state.draw_3d,
-                        game_state.scale_factor,
-                    );
-                }
-            }
-        },
-        .region => {
-            const region_data_index: usize = @intCast(
-                game_state.selected_region_p[1] * @as(usize, @intCast(board_dim)) + game_state.selected_region_p[0],
-            );
-            for (0..board_dim) |dest_row_index| {
-                for (0..board_dim) |dest_col_index| {
-                    var source_tile_coords: @Vector(2, usize) = @intCast(
-                        sp_map.canonicalTileP(@intCast(@Vector(2, usize){ dest_col_index, dest_row_index }), draw_rot_state),
-                    );
-                    sp_render.drawRegionTileFromCoords(
-                        platform_api,
-                        &world.region_data[region_data_index],
-                        tileset,
-                        source_tile_coords[1],
-                        source_tile_coords[0],
-                        dest_row_index,
-                        dest_col_index,
-                        scaled_tile_dim,
-                        @bitCast(game_state.board_translation),
-                        game_state.selected_tile_p,
-                        game_state.draw_3d,
-                        game_state.scale_factor,
-                    );
-                }
-            }
-        },
-    }
+    sp_render.drawBoard(
+        platform_api,
+        game_state,
+        @bitCast(scaled_tile_dim),
 
-    if (game_state.debug_draw_grid_lines) {
-        // NOTE(caleb): + 1 for outer grid lines
-        for (0..board_dim + 1) |grid_row| {
-            const start_p = sp_render.isoProj(
-                platform_api,
-                .{
-                    .x = scaled_tile_dim.x / 2.0,
-                    .y = scaled_tile_dim.y * @as(f32, @floatFromInt(grid_row)) - scaled_tile_dim.y / 2.0,
-                },
-                @intFromFloat(scaled_tile_dim.x),
-                @intFromFloat(scaled_tile_dim.y),
-                game_state.board_translation,
-            );
-            const end_p = sp_render.isoProj(
-                platform_api,
-                .{
-                    .x = scaled_tile_dim.x * @as(f32, @floatFromInt(board_dim)) + scaled_tile_dim.x / 2.0,
-                    .y = scaled_tile_dim.y * @as(f32, @floatFromInt(grid_row)) - scaled_tile_dim.y / 2.0,
-                },
-                @intFromFloat(scaled_tile_dim.x),
-                @intFromFloat(scaled_tile_dim.y),
-                game_state.board_translation,
-            );
-            platform_api.drawLineEx(start_p, end_p, 1, rl.RED);
-        }
-        for (0..board_dim + 1) |grid_col| {
-            const start_p = sp_render.isoProj(
-                platform_api,
-                .{
-                    .x = scaled_tile_dim.x * @as(f32, @floatFromInt(grid_col)) + scaled_tile_dim.x / 2.0,
-                    .y = -scaled_tile_dim.y / 2.0,
-                },
-                @intFromFloat(scaled_tile_dim.x),
-                @intFromFloat(scaled_tile_dim.y),
-                game_state.board_translation,
-            );
-            const end_p = sp_render.isoProj(
-                platform_api,
-                .{
-                    .x = scaled_tile_dim.x * @as(f32, @floatFromInt(grid_col)) + scaled_tile_dim.x / 2.0,
-                    .y = scaled_tile_dim.y * @as(f32, @floatFromInt(board_dim)) - scaled_tile_dim.y / 2.0,
-                },
-                @intFromFloat(scaled_tile_dim.x),
-                @intFromFloat(scaled_tile_dim.y),
-                game_state.board_translation,
-            );
-            platform_api.drawLineEx(start_p, end_p, 1, rl.RED);
-        }
-    }
+        view_mode, //- TODO(cabarger): use the int representations of these within game_state.
+        draw_rot_state,
+        world,
+        tileset,
+    );
 
-    if (game_state.debug_draw_tile_height) {
-        for (0..board_dim) |row_index| {
-            for (0..board_dim) |col_index| {
-                const canonical_board_p: @Vector(2, usize) = @intCast(
-                    sp_map.canonicalTileP(@intCast(@Vector(2, usize){ col_index, row_index }), @enumFromInt(game_state.draw_rot_state)),
-                );
-                const height = switch (@as(sp_map.ViewMode, @enumFromInt(game_state.view_mode))) {
-                    .region => world.region_data[game_state.selected_region_p[1] * board_dim + game_state.selected_region_p[0]]
-                        .height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]],
-                    .world => world.height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]],
-                };
-                var projected_p = sp_render.isoProjGlyph(
-                    platform_api,
-                    .{
-                        .x = @as(f32, @floatFromInt(col_index)) * scaled_tile_dim.x + scaled_tile_dim.x / 2.0 + scaled_tile_dim.x / 3.0,
-                        .y = @as(f32, @floatFromInt(row_index)) * scaled_tile_dim.y,
-                    },
-                    @intFromFloat(scaled_tile_dim.x),
-                    @intFromFloat(scaled_tile_dim.y),
-                    @bitCast(game_state.board_translation),
-                );
-                if (game_state.draw_3d)
-                    projected_p.y -= @as(f32, @floatFromInt(height)) * (scaled_tile_dim.y / 2.0);
-                platform_api.drawTextCodepoint(
-                    game_state.rl_font,
-                    @intCast(height + '0'),
-                    projected_p,
-                    sp_render.glyph_size,
-                    .{ .r = 0, .g = 0, .b = 255, .a = 255 },
-                );
-            }
-        }
-    }
+    if (game_state.debug_draw_grid_lines)
+        sp_render.debugDrawGridLines(
+            platform_api,
+            game_state,
+            @bitCast(scaled_tile_dim),
+        );
 
-    if (game_state.debug_draw_tile_hitboxes) {
-        for (0..board_dim) |row_index| {
-            for (0..board_dim) |col_index| {
-                const canonical_board_p: @Vector(2, usize) = @intCast(
-                    sp_map.canonicalTileP(@intCast(@Vector(2, usize){ col_index, row_index }), @enumFromInt(game_state.draw_rot_state)),
-                );
-                const height = switch (@as(sp_map.ViewMode, @enumFromInt(game_state.view_mode))) {
-                    .region => world.region_data[game_state.selected_region_p[1] * board_dim + game_state.selected_region_p[0]]
-                        .height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]],
-                    .world => world.height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]],
-                };
-                var projected_p = sp_render.isoProj(
-                    platform_api,
-                    .{
-                        .x = @as(f32, @floatFromInt(col_index)) * scaled_tile_dim.x,
-                        .y = @as(f32, @floatFromInt(row_index)) * scaled_tile_dim.y,
-                    },
-                    @intFromFloat(scaled_tile_dim.x),
-                    @intFromFloat(scaled_tile_dim.y),
-                    @bitCast(game_state.board_translation),
-                );
-                projected_p.y -= @as(f32, @floatFromInt(height)) * (scaled_tile_dim.y / 2.0);
-                platform_api.drawRectangleLinesEx(.{
-                    .x = projected_p.x,
-                    .y = projected_p.y,
-                    .width = scaled_tile_dim.x,
-                    .height = scaled_tile_dim.y / 2.0,
-                }, 1, rl.GREEN);
-            }
-        }
-    }
+    if (game_state.debug_draw_tile_height)
+        sp_render.debugDrawTileHeights(
+            platform_api,
+            game_state,
+            world,
+            @bitCast(scaled_tile_dim),
+        );
 
-    // Pause text
-    if (game_state.is_paused) {
-        const paused_width = platform_api.measureText("PAUSED", sp_render.glyph_size * 2);
-        platform_api.drawTextEx(game_state.rl_font, "PAUSED", .{
-            .x = @floatFromInt(@divFloor(platform_api.getScreenWidth(), 2) - @divFloor(paused_width, 2)),
-            .y = @floatFromInt(platform_api.getScreenHeight() - @divFloor(platform_api.getScreenHeight(), 5)),
-        }, sp_render.glyph_size * 2, 1.0, rl.WHITE);
-    }
+    if (game_state.debug_draw_tile_hitboxes)
+        sp_render.debugDrawTileHitboxes(
+            platform_api,
+            game_state,
+            world,
+            @bitCast(scaled_tile_dim),
+        );
 
-    // Debug info
-    {
-        const restore_end_index = game_state.scratch_fba.end_index;
-        defer game_state.scratch_fba.end_index = restore_end_index;
+    if (game_state.is_paused)
+        sp_render.drawPauseText(platform_api, game_state);
 
-        const game_timez = fmt.allocPrintZ(
-            scratch_ally,
-            "Time: {d}:{d}:{d}:{d}",
-            .{ game_state.game_time_year, game_state.game_time_day, game_state.game_time_hour, game_state.game_time_minute },
-        ) catch unreachable;
-        const entity_countz = fmt.allocPrintZ(
-            scratch_ally,
-            "Entity count: {d}",
-            .{entity_man.free_entities.capacity - entity_man.free_entities.items.len},
-        ) catch unreachable;
-        const resource_countz = fmt.allocPrintZ(
-            scratch_ally,
-            "Resource count: {d}",
-            .{resource_kind_components.data_count},
-        ) catch unreachable;
+    if (true) //- NOTE(cabarger): Allways drawing debug info right now.
+        sp_render.drawDebugInfo(
+            platform_api,
+            game_state,
+            entity_man,
+            resource_kind_components,
+        );
 
-        const fpsz = fmt.allocPrintZ(
-            scratch_ally,
-            "FPS: {d}",
-            .{platform_api.getFPS()},
-        ) catch unreachable;
-
-        const selected_region_p = fmt.allocPrintZ(
-            scratch_ally,
-            "Selected region p: ({d}, {d})",
-            .{ game_state.selected_region_p[0], game_state.selected_region_p[1] },
-        ) catch unreachable;
-
-        const selected_tile_p = fmt.allocPrintZ(
-            scratch_ally,
-            "Selected tile p: ({d}, {d})",
-            .{ game_state.selected_tile_p[0], game_state.selected_tile_p[1] },
-        ) catch unreachable;
-
-        for (&[_][:0]const u8{
-            game_timez,
-            resource_countz,
-            entity_countz,
-            fpsz,
-            selected_region_p,
-            selected_tile_p,
-        }, 0..) |strz, strz_index| {
-            platform_api.drawTextEx(game_state.rl_font, strz, .{
-                .x = 0, //@as(f32, @floatFromInt(board_dim)) * tile_width_px,
-                .y = @as(f32, @floatFromInt(strz_index)) * sp_render.glyph_size,
-            }, sp_render.glyph_size, 1.0, rl.WHITE);
-        }
-    }
     platform_api.endDrawing();
 }
 
@@ -751,7 +569,7 @@ fn gameStateInit(game_state: *sp_platform.GameState, platform_api: *const sp_pla
     game_state.did_init = true;
 }
 
-/// I was in the mood for a long function name. Fight me.
+/// Fight me.
 fn fixStuffThatBrokeBecauseOfReload(game_state: *const sp_platform.GameState) void {
     entity_man =
         @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.entity_man_offset));
