@@ -50,137 +50,36 @@ const assert = std.debug.assert;
 
 const board_dim = sp_map.board_dim;
 
+////////////////////////////////
+//- cabarger: Globals
+
+var entity_man: *ecs.EntityManager = undefined;
+var tile_p_components: *ecs.ComponentArray(@Vector(2, u16)) = undefined;
+var target_tile_p_components: *ecs.ComponentArray(@Vector(2, u16)) = undefined;
+var resource_kind_components: *ecs.ComponentArray(sp_sim.ResourceKind) = undefined;
+var inventory_components: *ecs.ComponentArray(sp_sim.Inventory) = undefined;
+var worker_state_components: *ecs.ComponentArray(sp_sim.WorkerState) = undefined;
+var tileset: *Tileset = undefined;
+var world: *World = undefined;
+
 export fn spUpdateAndRender(
     platform_api: *const sp_platform.PlatformAPI,
     game_state: *sp_platform.GameState,
     tctx: *base_thread_context.TCTX,
 ) void {
     _ = tctx;
-    const perm_ally = game_state.perm_fba.allocator();
     const scratch_ally = game_state.scratch_fba.allocator();
 
-    var entity_man: *ecs.EntityManager = undefined;
-    var tile_p_components: *ecs.ComponentArray(@Vector(2, u16)) = undefined;
-    var target_tile_p_components: *ecs.ComponentArray(@Vector(2, u16)) = undefined;
-    var resource_kind_components: *ecs.ComponentArray(sp_sim.ResourceKind) = undefined;
-    var inventory_components: *ecs.ComponentArray(sp_sim.Inventory) = undefined;
-    var worker_state_components: *ecs.ComponentArray(sp_sim.WorkerState) = undefined;
-    var tileset: *Tileset = undefined;
-    var world: *World = undefined;
+    //- cabarger: This is done exactly ONCE on the first game code load.
+    if (!game_state.did_init)
+        gameStateInit(game_state, platform_api);
 
-    //- cabarger: This is done once on FIRST game code load
-    if (!game_state.did_init) {
-        const max_entity_count = 2000;
-        game_state.entity_man_offset = game_state.perm_fba.end_index;
-        entity_man = perm_ally.create(ecs.EntityManager) catch unreachable;
-        entity_man.* = ecs.EntityManager.init(perm_ally, max_entity_count) catch unreachable;
-
-        game_state.tile_p_components_offset = game_state.perm_fba.end_index;
-        tile_p_components = perm_ally.create(ecs.ComponentArray(@Vector(2, u16))) catch unreachable;
-        tile_p_components.* =
-            ecs.ComponentArray(@Vector(2, u16)).init(perm_ally, max_entity_count) catch unreachable;
-
-        game_state.target_tile_p_components_offset = game_state.perm_fba.end_index;
-        target_tile_p_components = perm_ally.create(ecs.ComponentArray(@Vector(2, u16))) catch unreachable;
-        target_tile_p_components.* =
-            ecs.ComponentArray(@Vector(2, u16)).init(perm_ally, max_entity_count) catch unreachable;
-
-        game_state.resource_kind_components_offset = game_state.perm_fba.end_index;
-        resource_kind_components = perm_ally.create(ecs.ComponentArray(sp_sim.ResourceKind)) catch unreachable;
-        resource_kind_components.* =
-            ecs.ComponentArray(sp_sim.ResourceKind).init(perm_ally, max_entity_count) catch unreachable;
-
-        game_state.inventory_components_offset = game_state.perm_fba.end_index;
-        inventory_components = perm_ally.create(ecs.ComponentArray(sp_sim.Inventory)) catch unreachable;
-        inventory_components.* =
-            ecs.ComponentArray(sp_sim.Inventory).init(perm_ally, max_entity_count) catch unreachable;
-
-        game_state.worker_state_components_offset = game_state.perm_fba.end_index;
-        worker_state_components = perm_ally.create(ecs.ComponentArray(sp_sim.WorkerState)) catch unreachable;
-        worker_state_components.* =
-            ecs.ComponentArray(sp_sim.WorkerState).init(perm_ally, max_entity_count) catch unreachable;
-
-        game_state.tileset_offset = game_state.perm_fba.end_index;
-        tileset = perm_ally.create(Tileset) catch unreachable;
-        tileset.* = Tileset.init(&game_state.perm_fba, &game_state.scratch_fba, "./assets/art/small-planet.tsj", platform_api) catch unreachable;
-
-        game_state.world_offset = game_state.perm_fba.end_index;
-        world = perm_ally.create(World) catch unreachable;
-        world.* = World{
-            .region_data = perm_ally.alloc(
-                RegionData,
-                board_dim * board_dim,
-            ) catch unreachable,
-            .height_map = undefined,
-        };
-
-        game_state.seed = 116; // NOTE(caleb): Happens to be a good seed. Nothing special otherwise.
-        game_state.xoshiro_256 = rand.DefaultPrng.init(game_state.seed);
-
-        sp_map.genWorld(
-            game_state.xoshiro_256.random(),
-            tileset,
-            world,
-            entity_man,
-            tile_p_components,
-            resource_kind_components,
-        ) catch unreachable;
-
-        game_state.sample_walk_map = perm_ally.alloc(
-            usize,
-            board_dim * board_dim,
-        ) catch unreachable;
-        for (game_state.sample_walk_map) |*distance|
-            distance.* = math.maxInt(usize);
-
-        game_state.game_time_minute = 0;
-        game_state.game_time_hour = 0;
-        game_state.game_time_day = 0;
-        game_state.game_time_year = 0;
-
-        game_state.tick_granularity = @intFromEnum(sp_sim.TickGranularity.minute);
-
-        game_state.debug_draw_distance_map = false;
-        game_state.debug_draw_grid_lines = false;
-        game_state.debug_draw_tile_height = false;
-        game_state.debug_draw_tile_hitboxes = false;
-
-        game_state.is_paused = false;
-        game_state.pause_start_time = 0.0;
-        game_state.last_tick_time = 0;
-
-        game_state.view_mode = @intFromEnum(sp_map.ViewMode.world);
-        game_state.selected_tile_p = @Vector(2, i8){ -1, -1 };
-        game_state.selected_region_p = @Vector(2, u8){ 0, 0 };
-
-        game_state.draw_3d = true;
-        game_state.scale_factor = 2.0;
-
-        game_state.board_translation = @Vector(2, f32){ 0.0, 0.0 };
-
-        game_state.draw_rot_state = @intFromEnum(sp_render.DrawRotState.rotate_nonce);
-
-        game_state.rl_font = platform_api.loadFont("assets/fonts/ComicMono.ttf");
-
-        game_state.did_init = true;
+    if (game_state.did_reload) {
+        fixStuffThatBrokeBecauseOfReload(game_state);
+        //- cabarger: Condition for taking this code path. We've handled
+        // the reload.
+        game_state.did_reload = false;
     }
-
-    entity_man =
-        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.entity_man_offset));
-    tile_p_components =
-        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.tile_p_components_offset));
-    target_tile_p_components =
-        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.target_tile_p_components_offset));
-    resource_kind_components =
-        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.resource_kind_components_offset));
-    inventory_components =
-        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.inventory_components_offset));
-    worker_state_components =
-        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.worker_state_components_offset));
-    tileset =
-        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.tileset_offset));
-    world =
-        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.world_offset));
 
     var tick_granularity: sp_sim.TickGranularity = @enumFromInt(game_state.tick_granularity);
     var view_mode: sp_map.ViewMode = @enumFromInt(game_state.view_mode);
@@ -752,4 +651,122 @@ export fn spUpdateAndRender(
         }
     }
     platform_api.endDrawing();
+}
+
+fn gameStateInit(game_state: *sp_platform.GameState, platform_api: *const sp_platform.PlatformAPI) void {
+    const perm_ally = game_state.perm_fba.allocator();
+
+    const max_entity_count = 2000;
+    game_state.entity_man_offset = game_state.perm_fba.end_index;
+    entity_man = perm_ally.create(ecs.EntityManager) catch unreachable;
+    entity_man.* = ecs.EntityManager.init(perm_ally, max_entity_count) catch unreachable;
+
+    game_state.tile_p_components_offset = game_state.perm_fba.end_index;
+    tile_p_components = perm_ally.create(ecs.ComponentArray(@Vector(2, u16))) catch unreachable;
+    tile_p_components.* =
+        ecs.ComponentArray(@Vector(2, u16)).init(perm_ally, max_entity_count) catch unreachable;
+
+    game_state.target_tile_p_components_offset = game_state.perm_fba.end_index;
+    target_tile_p_components = perm_ally.create(ecs.ComponentArray(@Vector(2, u16))) catch unreachable;
+    target_tile_p_components.* =
+        ecs.ComponentArray(@Vector(2, u16)).init(perm_ally, max_entity_count) catch unreachable;
+
+    game_state.resource_kind_components_offset = game_state.perm_fba.end_index;
+    resource_kind_components = perm_ally.create(ecs.ComponentArray(sp_sim.ResourceKind)) catch unreachable;
+    resource_kind_components.* =
+        ecs.ComponentArray(sp_sim.ResourceKind).init(perm_ally, max_entity_count) catch unreachable;
+
+    game_state.inventory_components_offset = game_state.perm_fba.end_index;
+    inventory_components = perm_ally.create(ecs.ComponentArray(sp_sim.Inventory)) catch unreachable;
+    inventory_components.* =
+        ecs.ComponentArray(sp_sim.Inventory).init(perm_ally, max_entity_count) catch unreachable;
+
+    game_state.worker_state_components_offset = game_state.perm_fba.end_index;
+    worker_state_components = perm_ally.create(ecs.ComponentArray(sp_sim.WorkerState)) catch unreachable;
+    worker_state_components.* =
+        ecs.ComponentArray(sp_sim.WorkerState).init(perm_ally, max_entity_count) catch unreachable;
+
+    game_state.tileset_offset = game_state.perm_fba.end_index;
+    tileset = perm_ally.create(Tileset) catch unreachable;
+    tileset.* = Tileset.init(&game_state.perm_fba, &game_state.scratch_fba, "./assets/art/small-planet.tsj", platform_api) catch unreachable;
+
+    game_state.world_offset = game_state.perm_fba.end_index;
+    world = perm_ally.create(World) catch unreachable;
+    world.* = World{
+        .region_data = perm_ally.alloc(
+            RegionData,
+            board_dim * board_dim,
+        ) catch unreachable,
+        .height_map = undefined,
+    };
+
+    game_state.seed = 116; // NOTE(caleb): Happens to be a good seed. Nothing special otherwise.
+    game_state.xoshiro_256 = rand.DefaultPrng.init(game_state.seed);
+
+    sp_map.genWorld(
+        game_state.xoshiro_256.random(),
+        tileset,
+        world,
+        entity_man,
+        tile_p_components,
+        resource_kind_components,
+    ) catch unreachable;
+
+    game_state.sample_walk_map = perm_ally.alloc(
+        usize,
+        board_dim * board_dim,
+    ) catch unreachable;
+    for (game_state.sample_walk_map) |*distance|
+        distance.* = math.maxInt(usize);
+
+    game_state.game_time_minute = 0;
+    game_state.game_time_hour = 0;
+    game_state.game_time_day = 0;
+    game_state.game_time_year = 0;
+
+    game_state.tick_granularity = @intFromEnum(sp_sim.TickGranularity.minute);
+
+    game_state.debug_draw_distance_map = false;
+    game_state.debug_draw_grid_lines = false;
+    game_state.debug_draw_tile_height = false;
+    game_state.debug_draw_tile_hitboxes = false;
+
+    game_state.is_paused = false;
+    game_state.pause_start_time = 0.0;
+    game_state.last_tick_time = 0;
+
+    game_state.view_mode = @intFromEnum(sp_map.ViewMode.world);
+    game_state.selected_tile_p = @Vector(2, i8){ -1, -1 };
+    game_state.selected_region_p = @Vector(2, u8){ 0, 0 };
+
+    game_state.draw_3d = true;
+    game_state.scale_factor = 2.0;
+
+    game_state.board_translation = @Vector(2, f32){ 0.0, 0.0 };
+
+    game_state.draw_rot_state = @intFromEnum(sp_render.DrawRotState.rotate_nonce);
+
+    game_state.rl_font = platform_api.loadFont("assets/fonts/ComicMono.ttf");
+
+    game_state.did_init = true;
+}
+
+/// I was in the mood for a long function name. Fight me.
+fn fixStuffThatBrokeBecauseOfReload(game_state: *const sp_platform.GameState) void {
+    entity_man =
+        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.entity_man_offset));
+    tile_p_components =
+        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.tile_p_components_offset));
+    target_tile_p_components =
+        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.target_tile_p_components_offset));
+    resource_kind_components =
+        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.resource_kind_components_offset));
+    inventory_components =
+        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.inventory_components_offset));
+    worker_state_components =
+        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.worker_state_components_offset));
+    tileset =
+        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.tileset_offset));
+    world =
+        @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.world_offset));
 }

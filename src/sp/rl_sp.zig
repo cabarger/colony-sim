@@ -26,11 +26,11 @@ const FixedBufferAllocator = heap.FixedBufferAllocator;
 pub extern "c" fn dlerror() ?[*:0]const u8;
 
 pub fn main() !void {
-    // Window/Audio init
     rl.InitWindow(800, 600, "small-planet");
     rl.SetWindowState(rl.FLAG_WINDOW_RESIZABLE);
     rl.InitAudioDevice();
 
+    //- cabarger: Get that thread context
     var tctx: base_thread_context.TCTX = undefined;
     base_thread_context.tctxInitAndEquip(&tctx);
 
@@ -42,7 +42,6 @@ pub fn main() !void {
         var platform_mem = ally.alloc(u8, 1024) catch unreachable;
         platform_fba = FixedBufferAllocator.init(platform_mem);
     }
-
     //- cabarger: Game memory
     var game_state: sp_platform.GameState = undefined;
     {
@@ -62,7 +61,7 @@ pub fn main() !void {
 
     const track1 = rl.LoadMusicStream("assets/music/track_1.wav");
     rl.PlayMusicStream(track1);
-    rl.SetMusicVolume(track1, 0.0);
+    rl.SetMusicVolume(track1, 1.0);
 
     const rel_lib_path = "./zig-out/lib/";
     const active_game_code_path = try fs.path.join(
@@ -98,6 +97,7 @@ pub fn main() !void {
             game_code_fn_ptr = try loadLibraryFunction(&platform_fba, game_code_library, "spUpdateAndRender");
             spUpdateAndRender = @ptrCast(game_code_fn_ptr);
             game_code_file_ctime = creation_time_now;
+            game_state.did_reload = true; //- cabarger: Notify game code that it was reloaded.
         }
 
         rl.UpdateMusicStream(track1);

@@ -58,7 +58,10 @@ pub const PlatformAPI = struct {
 
 // TODO(caleb): Function type for smallPlanetGameCode()
 pub const GameState = struct {
+    /// False prior to initial game code load otherwise true.
     did_init: bool,
+    /// True when game code is recompiled.
+    did_reload: bool,
     perm_fba: FixedBufferAllocator,
     scratch_fba: FixedBufferAllocator,
 
