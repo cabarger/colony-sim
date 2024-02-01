@@ -49,6 +49,23 @@ const FixedBufferAllocator = std.heap.FixedBufferAllocator;
 const assert = std.debug.assert;
 const board_dim = sp_map.board_dim;
 
+inline fn scaledTileDim(
+    tile_width: u16,
+    tile_height: u16,
+    scale_factor: f32,
+) @Vector(2, f32) {
+    return .{
+        @as(f32, @floatFromInt(tile_width)) * scale_factor,
+        @as(f32, @floatFromInt(tile_height)) * scale_factor,
+    };
+}
+
+const GameMode = enum(u8) {
+    title_screen,
+    play,
+    count,
+};
+
 ////////////////////////////////
 //- cabarger: Game code globals
 
@@ -80,100 +97,43 @@ export fn spUpdateAndRender(
         game_state.did_reload = false;
     }
 
-    var tick_granularity: sp_sim.TickGranularity = @enumFromInt(game_state.tick_granularity);
-    var view_mode: sp_map.ViewMode = @enumFromInt(game_state.view_mode);
-    var draw_rot_state: sp_render.DrawRotState = @enumFromInt(game_state.draw_rot_state);
-
     ////////////////////////////////
     //- cabarger: Update
 
+    //- cabarger: Handle inputs
     const mouse_wheel_move = game_input.mouse_input.wheel_move;
     if (mouse_wheel_move != 0) {
         game_state.scale_factor += if (mouse_wheel_move == -1) -sp_render.scale_inc else sp_render.scale_inc;
         game_state.scale_factor = base_math.clampF32(game_state.scale_factor, 0.25, 10.0);
     }
 
-    const scaled_tile_dim: rl.Vector2 = .{
-        .x = @as(f32, @floatFromInt(tileset.tile_width)) * game_state.scale_factor,
-        .y = @as(f32, @floatFromInt(tileset.tile_height)) * game_state.scale_factor,
-    };
-
-    const mouse_moved = @reduce(.And, game_input.last_mouse_input.p != game_input.mouse_input.p);
-
-    if (mouse_moved) {
-        if (game_state.draw_3d) {
-            game_state.selected_tile_p = .{ -1, -1 };
-            var row_index: isize = board_dim - 1;
-            outer: while (row_index >= 0) : (row_index -= 1) {
-                var col_index: isize = board_dim - 1;
-                while (col_index >= 0) : (col_index -= 1) {
-                    const canonical_board_p: @Vector(2, usize) = @intCast(
-                        sp_map.canonicalTileP(@intCast(@Vector(2, usize){ @intCast(col_index), @intCast(row_index) }), @enumFromInt(game_state.draw_rot_state)),
-                    );
-                    const height = switch (@as(sp_map.ViewMode, @enumFromInt(game_state.view_mode))) {
-                        .region => world.region_data[game_state.selected_region_p[1] * board_dim + game_state.selected_region_p[0]]
-                            .height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]],
-                        .world => world.height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]],
-                    };
-                    var projected_p = sp_render.isoProj(
-                        platform_api,
-                        .{
-                            .x = @as(f32, @floatFromInt(col_index)) * scaled_tile_dim.x,
-                            .y = @as(f32, @floatFromInt(row_index)) * scaled_tile_dim.y,
-                        },
-                        @intFromFloat(scaled_tile_dim.x),
-                        @intFromFloat(scaled_tile_dim.y),
-                        game_state.board_translation,
-                    );
-                    projected_p.y -= @as(f32, @floatFromInt(height)) * (scaled_tile_dim.y / 2.0);
-                    if (platform_api.checkCollisionPointRec(@bitCast(game_input.mouse_input.p), .{
-                        .x = projected_p.x,
-                        .y = projected_p.y,
-                        .width = scaled_tile_dim.x,
-                        .height = scaled_tile_dim.y / 2.0,
-                    })) {
-                        game_state.selected_tile_p = @Vector(2, i8){ @intCast(col_index), @intCast(row_index) };
-                        break :outer;
-                    }
-                }
-            }
-        } else {
-            const deprojected_mouse_p = sp_render.isoInvert(
-                platform_api,
-                game_input.mouse_input.p - @Vector(2, f32){ scaled_tile_dim.x / 2.0, 0.0 },
-                @intFromFloat(scaled_tile_dim.x),
-                @intFromFloat(scaled_tile_dim.y),
-                game_state.board_translation,
-            );
-            game_state.selected_tile_p[0] = @intFromFloat(deprojected_mouse_p.x / scaled_tile_dim.x);
-            game_state.selected_tile_p[1] = @intFromFloat(deprojected_mouse_p.y / scaled_tile_dim.y);
-        }
-    }
+    if (@reduce(.And, game_input.last_mouse_input.p != game_input.mouse_input.p))
+        game_state.selected_tile_p = selectedTilePFromMouseP(platform_api, game_state, game_input);
 
     if (game_input.mouse_input.right_click)
         game_state.board_translation += game_input.mouse_input.p - game_input.last_mouse_input.p;
 
     if (game_input.key_input.isKeyPressed(.r) and game_input.key_input.isKeyPressed(.left_shift)) {
-        draw_rot_state =
-            @enumFromInt(@mod(@as(i8, @intCast(game_state.draw_rot_state)) - 1, @intFromEnum(sp_render.DrawRotState.count)));
-        game_state.draw_rot_state = @intFromEnum(draw_rot_state);
+        game_state.draw_rot_state = @intCast(@mod(
+            @as(i8, @intCast(game_state.draw_rot_state)) - 1,
+            @intFromEnum(sp_render.DrawRotState.count),
+        ));
     } else if (game_input.key_input.isKeyPressed(.r)) {
-        draw_rot_state =
-            @enumFromInt((game_state.draw_rot_state + 1) % @intFromEnum(sp_render.DrawRotState.count));
-        game_state.draw_rot_state = @intFromEnum(draw_rot_state);
+        game_state.draw_rot_state = (game_state.draw_rot_state + 1) % @intFromEnum(sp_render.DrawRotState.count);
     } else if (game_input.key_input.isKeyPressed(.h)) {
         game_state.draw_3d = !game_state.draw_3d;
-    } else if (game_input.key_input.isKeyPressed(.kp_4) or game_input.key_input.isKeyPressed(.kp_6)) {
+    }
+    //- NOTE(cabarger): Advance the seed and generate a new world... This is for debugging!
+    else if (game_input.key_input.isKeyPressed(.kp_4) or game_input.key_input.isKeyPressed(.kp_6)) {
+        //- cabarger: RNG from new seed
         if (game_input.key_input.isKeyPressed(.kp_6)) {
             game_state.seed += 1;
         } else if (game_input.key_input.isKeyPressed(.kp_4) and game_state.seed > 0)
             game_state.seed -= 1;
-        std.debug.print("{d}\n", .{game_state.seed});
         game_state.xoshiro_256 = rand.DefaultPrng.init(game_state.seed);
+        std.debug.print("{d}\n", .{game_state.seed}); //- NOTE(cabarger): It's nice to see what seed we are working with.
 
-        while (entity_man.free_entities.capacity != entity_man.free_entities.items.len)
-            entity_man.free_entities.insertAssumeCapacity(entity_man.free_entities.items.len, entity_man.free_entities.items.len);
-
+        entity_man.reset();
         tile_p_components.reset();
         resource_kind_components.reset();
 
@@ -185,10 +145,11 @@ export fn spUpdateAndRender(
             tile_p_components,
             resource_kind_components,
         ) catch unreachable;
+    } else if (game_input.key_input.isKeyPressed(.m)) {
+        game_state.game_mode = (game_state.game_mode + 1) % @intFromEnum(GameMode.count);
+    } else if (game_input.key_input.isKeyPressed(.t)) {
+        game_state.tick_granularity = (game_state.tick_granularity + 1) % @intFromEnum(sp_sim.TickGranularity.count);
     } else if (game_input.key_input.isKeyPressed(.up)) {
-        tick_granularity =
-            @enumFromInt((game_state.tick_granularity + 1) % @intFromEnum(sp_sim.TickGranularity.count));
-        game_state.tick_granularity = @intFromEnum(tick_granularity);
         game_state.selected_tile_p[1] -= 1;
     } else if (game_input.key_input.isKeyPressed(.down)) {
         game_state.selected_tile_p[1] += 1;
@@ -205,14 +166,14 @@ export fn spUpdateAndRender(
     } else if (game_input.key_input.isKeyPressed(.f4)) {
         game_state.debug_draw_tile_hitboxes = !game_state.debug_draw_tile_hitboxes;
     } else if (game_input.key_input.isKeyPressed(.e)) {
-        view_mode = .world;
-        game_state.view_mode = @intFromEnum(view_mode);
-    } else if (game_input.key_input.isKeyPressed(.enter) and view_mode == .world) {
+        game_state.view_mode = @intFromEnum(sp_map.ViewMode.world);
+    } else if (game_input.key_input.isKeyPressed(.enter) and
+        @as(sp_map.ViewMode, @enumFromInt(game_state.view_mode)) == .world)
+    {
         const zero_vec: @Vector(2, i8) = @splat(0);
         const dim_vec: @Vector(2, i8) = @splat(board_dim);
         if (@reduce(.And, game_state.selected_tile_p >= zero_vec) and @reduce(.And, game_state.selected_tile_p < dim_vec)) {
-            view_mode = .region;
-            game_state.view_mode = @intFromEnum(view_mode);
+            game_state.view_mode = @intFromEnum(sp_map.ViewMode.region);
             game_state.selected_region_p = @intCast(
                 sp_map.canonicalTileP(game_state.selected_tile_p, @enumFromInt(game_state.draw_rot_state)),
             );
@@ -224,190 +185,20 @@ export fn spUpdateAndRender(
         } else game_state.last_tick_time += platform_api.getTime() - game_state.pause_start_time;
     }
 
+    //- cabarger: Simulation updates
     const time_now = platform_api.getTime();
     if (!game_state.is_paused and time_now - game_state.last_tick_time >= sp_sim.tick_rate_sec) {
         game_state.last_tick_time = time_now;
-
         //- cabarger: Game tick updates updates happen here. The initial thinking was something like
-        //            do this tick n times depending on time granularity i.e once for 1 minutes 60 times
-        //            for hours etc.
-        for (0..worker_state_components.data_count) |wsc_index| {
-            const worker_state = worker_state_components.data[wsc_index];
-            const worker_entity_id = worker_state_components.data_to_entity
-                .get(wsc_index) orelse unreachable;
-            const worker_tile_p_index = tile_p_components.entity_to_data
-                .get(worker_entity_id) orelse unreachable;
-            const worker_target_tile_p_index = target_tile_p_components.entity_to_data
-                .get(worker_entity_id) orelse unreachable;
-            const worker_inventory_index = inventory_components.entity_to_data
-                .get(worker_entity_id) orelse unreachable;
-            switch (worker_state) {
-                .choose_new_target => {
-                    if (sp_sim.sumOfInventory(inventory_components, worker_inventory_index) > 0) {
-                        for (0..inventory_components.data_count) |ic_index| {
-                            const entity_id = inventory_components.data_to_entity
-                                .get(ic_index) orelse unreachable;
-                            if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.pile))) { // Filter for piles
-                                const storage_tile_p_index = tile_p_components.entity_to_data
-                                    .get(entity_id) orelse unreachable;
-                                if (@reduce(.And, tile_p_components.data[worker_tile_p_index] ==
-                                    tile_p_components.data[storage_tile_p_index]))
-                                {
-                                    inventory_components.data[ic_index].rock_count +=
-                                        inventory_components.data[worker_inventory_index].rock_count;
-                                    inventory_components.data[ic_index].stick_count +=
-                                        inventory_components.data[worker_inventory_index].stick_count;
-                                    inventory_components.data[ic_index].berry_count +=
-                                        inventory_components.data[worker_inventory_index].berry_count;
-                                    inventory_components.data[worker_inventory_index] = .{};
-                                }
-                            }
-                        }
-                    }
-
-                    var resources_on_board = if (resource_kind_components.data_count > 0) true else false;
-                    var piles_on_board = false;
-                    for (0..inventory_components.data_count) |ic_index| {
-                        const entity_id = inventory_components.data_to_entity
-                            .get(ic_index) orelse unreachable;
-                        if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.pile))) {
-                            piles_on_board = true;
-                            break;
-                        }
-                    }
-
-                    if ((piles_on_board and sp_sim.sumOfInventory(inventory_components, worker_inventory_index) >= sp_sim.worker_carry_cap) or
-                        (piles_on_board and sp_sim.sumOfInventory(inventory_components, worker_inventory_index) > 0 and !resources_on_board))
-                    {
-                        var closest_pile_d: f32 = math.floatMax(f32);
-                        for (0..inventory_components.data_count) |ic_index| {
-                            const entity_id = inventory_components.data_to_entity
-                                .get(ic_index) orelse unreachable;
-                            if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.pile))) { // Filter for piles
-                                const storage_tile_p_index =
-                                    tile_p_components.entity_to_data.get(entity_id) orelse unreachable;
-                                const storage_tile_p = tile_p_components.data[storage_tile_p_index];
-                                if (base_math.vector2DistanceU16(tile_p_components.data[worker_tile_p_index], storage_tile_p) < closest_pile_d) {
-                                    closest_pile_d = base_math.vector2DistanceU16(tile_p_components.data[worker_tile_p_index], storage_tile_p);
-                                    target_tile_p_components.data[worker_target_tile_p_index] = storage_tile_p;
-                                }
-                            }
-                        }
-                        worker_state_components.data[wsc_index] = .pathing_to_target;
-                    } else if (resources_on_board and
-                        (sp_sim.sumOfInventory(inventory_components, worker_inventory_index) < sp_sim.worker_carry_cap))
-                    {
-                        var closest_resource_d: f32 = math.floatMax(f32);
-                        for (0..resource_kind_components.data_count) |rk_component_index| {
-                            const entity_id = resource_kind_components.data_to_entity
-                                .get(rk_component_index) orelse unreachable;
-                            const tile_p_index = tile_p_components.entity_to_data
-                                .get(entity_id) orelse unreachable;
-                            const tile_p = tile_p_components.data[tile_p_index];
-
-                            if (base_math.vector2DistanceU16(tile_p_components.data[worker_tile_p_index], tile_p) < closest_resource_d) {
-                                closest_resource_d = base_math.vector2DistanceU16(
-                                    tile_p_components.data[worker_tile_p_index],
-                                    tile_p,
-                                );
-                                target_tile_p_components.data[worker_target_tile_p_index] = tile_p;
-                            }
-                        }
-                        worker_state_components.data[wsc_index] = .pathing_to_target;
-                    } else worker_state_components.data[wsc_index] = .idle;
-                },
-                .pathing_to_target => {
-                    sp_map.swpUpdateMap(
-                        &game_state.scratch_fba,
-                        game_state.sample_walk_map,
-                        target_tile_p_components.data[worker_target_tile_p_index][1],
-                    ) catch unreachable;
-
-                    // Have worker navigate to rock
-                    var next_worker_tile_p: @Vector(2, u16) = undefined;
-                    var closest_tile_distance: usize = math.maxInt(usize);
-
-                    const region_tile_index = tile_p_components.data[worker_tile_p_index][1];
-                    const region_tile_row = @divTrunc(region_tile_index, board_dim);
-                    const region_tile_col = region_tile_index % board_dim;
-                    for (&[_]@Vector(2, i8){
-                        @Vector(2, i8){ 0, -1 },
-                        @Vector(2, i8){ 0, 1 },
-                        @Vector(2, i8){ 1, 0 },
-                        @Vector(2, i8){ -1, 0 },
-                    }) |d_tile_coords| {
-                        const neighbor_tile_p = @Vector(2, i8){
-                            @intCast(region_tile_col),
-                            @intCast(region_tile_row),
-                        } + d_tile_coords;
-                        if (!(neighbor_tile_p[1] >= board_dim or
-                            neighbor_tile_p[1] < 0 or
-                            neighbor_tile_p[0] >= board_dim or
-                            neighbor_tile_p[0] < 0))
-                        {
-                            if (game_state.sample_walk_map[@intCast(neighbor_tile_p[1] * board_dim + neighbor_tile_p[0])] < closest_tile_distance) {
-                                closest_tile_distance = game_state.sample_walk_map[@intCast(neighbor_tile_p[1] * board_dim + neighbor_tile_p[0])];
-                                next_worker_tile_p = @Vector(2, u16){ 0, @intCast(neighbor_tile_p[1] * board_dim + neighbor_tile_p[0]) }; // FIXME(caleb): WORLD INDEX
-                            }
-                        }
-                    }
-                    tile_p_components.data[worker_tile_p_index] = next_worker_tile_p;
-                    if (@reduce(.And, tile_p_components.data[worker_tile_p_index] == target_tile_p_components.data[worker_target_tile_p_index])) {
-                        for (0..tile_p_components.data_count) |tp_component_index| {
-                            if (@reduce(.And, tile_p_components.data[worker_tile_p_index] == tile_p_components.data[tp_component_index])) {
-                                const entity_id = tile_p_components.data_to_entity
-                                    .get(tp_component_index) orelse unreachable;
-                                if (entity_man.signatures[entity_id].eql(entity_man.entitySignature(.resource))) {
-                                    const rkc_index = resource_kind_components.entity_to_data
-                                        .get(entity_id) orelse unreachable;
-                                    switch (resource_kind_components.data[rkc_index]) {
-                                        .rock => inventory_components.data[worker_inventory_index].rock_count += 1,
-                                        .stick => inventory_components.data[worker_inventory_index].stick_count += 1,
-                                        .berry => inventory_components.data[worker_inventory_index].berry_count += 1,
-                                        .tree => unreachable, // TODO(caleb): Handle me
-                                    }
-                                    resource_kind_components.remove(entity_id);
-                                    tile_p_components.remove(entity_id);
-                                    entity_man.release(entity_id);
-                                    break;
-                                }
-                            }
-                        }
-                        worker_state_components.data[wsc_index] = .choose_new_target;
-                    }
-                },
-                .idle => {},
-            }
-        }
-
-        // Update in game time
-        switch (tick_granularity) {
-            .minute => {
-                game_state.game_time_minute += 1;
-            },
-            .hour => {
-                game_state.game_time_hour += 1;
-            },
-            .day => {
-                game_state.game_time_day += 1;
-            },
-            .year => {
-                game_state.game_time_year += 1;
-            },
-            else => unreachable,
-        }
-        if (game_state.game_time_minute >= 60) {
-            game_state.game_time_minute = 0;
-            game_state.game_time_hour += 1;
-        }
-        if (game_state.game_time_hour >= 24) {
-            game_state.game_time_hour = 0;
-            game_state.game_time_day += 1;
-        }
-        if (game_state.game_time_day >= 365) {
-            game_state.game_time_day = 0;
-            game_state.game_time_year += 1;
-        }
+        // do this tick n times depending on tick granularity.
+        sp_sim.updateWorkers();
+        sp_sim.updateGameTime(
+            @enumFromInt(game_state.tick_granularity),
+            &game_state.game_time_minute,
+            &game_state.game_time_hour,
+            &game_state.game_time_day,
+            &game_state.game_time_year,
+        );
     }
 
     ////////////////////////////////
@@ -416,50 +207,78 @@ export fn spUpdateAndRender(
     platform_api.beginDrawing();
     platform_api.clearBackground(.{ .r = 10, .g = 10, .b = 10, .a = 255 });
 
-    sp_render.drawBoard(
-        platform_api,
-        game_state,
-        @bitCast(scaled_tile_dim),
+    switch (@as(GameMode, @enumFromInt(game_state.game_mode))) {
+        .play => {
 
-        view_mode, //- TODO(cabarger): use the int representations of these within game_state.
-        draw_rot_state,
-        world,
-        tileset,
-    );
+            //- FIXME(cabarger): I'm being lazy and passing game_state to these draw functions,
+            // just pass what is needed.
 
-    if (game_state.debug_draw_grid_lines)
-        sp_render.debugDrawGridLines(
+            sp_render.drawBoard(
+                platform_api,
+                game_state,
+                scaledTileDim(
+                    tileset.tile_width,
+                    tileset.tile_height,
+                    game_state.scale_factor,
+                ),
+                @enumFromInt(game_state.view_mode),
+                @enumFromInt(game_state.draw_rot_state),
+                world,
+                tileset,
+            );
+
+            if (game_state.debug_draw_grid_lines)
+                sp_render.debugDrawGridLines(
+                    platform_api,
+                    game_state,
+                    scaledTileDim(
+                        tileset.tile_width,
+                        tileset.tile_height,
+                        game_state.scale_factor,
+                    ),
+                );
+
+            if (game_state.debug_draw_tile_height)
+                sp_render.debugDrawTileHeights(
+                    platform_api,
+                    game_state,
+                    world,
+                    scaledTileDim(
+                        tileset.tile_width,
+                        tileset.tile_height,
+                        game_state.scale_factor,
+                    ),
+                );
+
+            if (game_state.debug_draw_tile_hitboxes)
+                sp_render.debugDrawTileHitboxes(
+                    platform_api,
+                    game_state,
+                    world,
+                    scaledTileDim(
+                        tileset.tile_width,
+                        tileset.tile_height,
+                        game_state.scale_factor,
+                    ),
+                );
+
+            if (game_state.is_paused)
+                sp_render.drawPauseText(platform_api, game_state);
+
+            if (true) //- NOTE(cabarger): Allways drawing debug info right now.
+                sp_render.drawDebugInfo(
+                    platform_api,
+                    game_state,
+                    entity_man,
+                    resource_kind_components,
+                );
+        },
+        .title_screen => sp_render.drawTitleScreenText(
             platform_api,
             game_state,
-            @bitCast(scaled_tile_dim),
-        );
-
-    if (game_state.debug_draw_tile_height)
-        sp_render.debugDrawTileHeights(
-            platform_api,
-            game_state,
-            world,
-            @bitCast(scaled_tile_dim),
-        );
-
-    if (game_state.debug_draw_tile_hitboxes)
-        sp_render.debugDrawTileHitboxes(
-            platform_api,
-            game_state,
-            world,
-            @bitCast(scaled_tile_dim),
-        );
-
-    if (game_state.is_paused)
-        sp_render.drawPauseText(platform_api, game_state);
-
-    if (true) //- NOTE(cabarger): Allways drawing debug info right now.
-        sp_render.drawDebugInfo(
-            platform_api,
-            game_state,
-            entity_man,
-            resource_kind_components,
-        );
+        ),
+        .count => unreachable,
+    }
 
     platform_api.endDrawing();
 }
@@ -510,6 +329,8 @@ fn gameStateInit(game_state: *sp_platform.GameState, platform_api: *const sp_pla
         ) catch unreachable,
         .height_map = undefined,
     };
+
+    game_state.game_mode = @intFromEnum(GameMode.play);
 
     game_state.seed = 116; // NOTE(caleb): Happens to be a good seed. Nothing special otherwise.
     game_state.xoshiro_256 = rand.DefaultPrng.init(game_state.seed);
@@ -580,4 +401,61 @@ fn fixStuffThatBrokeBecauseOfReload(game_state: *const sp_platform.GameState) vo
         @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.tileset_offset));
     world =
         @ptrCast(@alignCast(game_state.perm_fba.buffer.ptr + game_state.world_offset));
+}
+
+fn selectedTilePFromMouseP(
+    platform_api: *const sp_platform.PlatformAPI,
+    game_state: *sp_platform.GameState,
+    game_input: *const sp_platform.GameInput,
+) @Vector(2, i8) {
+    var result: @Vector(2, i8) = .{ -1, -1 };
+    if (game_state.draw_3d) {
+        var row_index: isize = board_dim - 1;
+        outer: while (row_index >= 0) : (row_index -= 1) {
+            var col_index: isize = board_dim - 1;
+            while (col_index >= 0) : (col_index -= 1) {
+                const canonical_board_p: @Vector(2, usize) = @intCast(
+                    sp_map.canonicalTileP(@intCast(@Vector(2, usize){ @intCast(col_index), @intCast(row_index) }), @enumFromInt(game_state.draw_rot_state)),
+                );
+                const height = switch (@as(sp_map.ViewMode, @enumFromInt(game_state.view_mode))) {
+                    .region => world.region_data[game_state.selected_region_p[1] * board_dim + game_state.selected_region_p[0]]
+                        .height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]],
+                    .world => world.height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]],
+                };
+                var projected_p = sp_render.isoProj(
+                    platform_api,
+                    .{
+                        .x = @as(f32, @floatFromInt(col_index)) * scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[0],
+                        .y = @as(f32, @floatFromInt(row_index)) * scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[1],
+                    },
+                    @intFromFloat(scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[0]),
+                    @intFromFloat(scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[1]),
+                    game_state.board_translation,
+                );
+                projected_p.y -= @as(f32, @floatFromInt(height)) * (scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[1] / 2.0);
+                if (platform_api.checkCollisionPointRec(@bitCast(game_input.mouse_input.p), .{
+                    .x = projected_p.x,
+                    .y = projected_p.y,
+                    .width = scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[0],
+                    .height = scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[1] / 2.0,
+                })) {
+                    result = @Vector(2, i8){ @intCast(col_index), @intCast(row_index) };
+                    break :outer;
+                }
+            }
+        }
+    } else {
+        const deprojected_mouse_p = sp_render.isoInvert(
+            platform_api,
+            game_input.mouse_input.p - scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor) / @Vector(2, f32){ 2.0, 0.0 },
+            @intFromFloat(scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[0]),
+            @intFromFloat(scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[1]),
+            game_state.board_translation,
+        );
+        result = @Vector(2, i8){
+            @intFromFloat(deprojected_mouse_p.x / scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[0]),
+            @intFromFloat(deprojected_mouse_p.y / scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[1]),
+        };
+    }
+    return result;
 }

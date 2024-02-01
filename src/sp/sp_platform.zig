@@ -42,6 +42,8 @@ pub const GameInput = struct {
         r = 0,
         h,
         e,
+        m,
+        t,
 
         f1,
         f2,
@@ -131,14 +133,15 @@ pub const GameState = struct {
 
     // Types which are shared between platform and game code are placed here directly
     // as seen bellow.
+    game_mode: u8,
 
     seed: u64,
     xoshiro_256: rand.Xoshiro256,
     sample_walk_map: []usize,
 
-    game_time_minute: usize,
-    game_time_hour: usize,
-    game_time_day: usize,
+    game_time_minute: u8,
+    game_time_hour: u8,
+    game_time_day: u16,
     game_time_year: usize,
 
     tick_granularity: u8,

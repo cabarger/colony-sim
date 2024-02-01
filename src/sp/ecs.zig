@@ -77,6 +77,11 @@ pub const EntityManager = struct {
         return result;
     }
 
+    pub inline fn reset(entity_man: *EntityManager) void {
+        while (entity_man.free_entities.capacity != entity_man.free_entities.items.len)
+            entity_man.free_entities.insertAssumeCapacity(entity_man.free_entities.items.len, entity_man.free_entities.items.len);
+    }
+
     pub inline fn entitySignature(entity_man: *const EntityManager, entity_kind: EntityKind) StaticBitSet(@intFromEnum(ComponentKind.count)) {
         return entity_man.signature_table[@intFromEnum(entity_kind)];
     }

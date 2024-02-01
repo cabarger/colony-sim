@@ -2,6 +2,20 @@ const std = @import("std");
 const rl = @import("raylib/src/build.zig");
 
 pub fn build(b: *std.Build) void {
+    ////////////////////////////////
+    //- cabarger: Build options
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "enable_sound", b.option(bool, "enable-sound", "Enable sound") orelse false);
+    var build_game_code = b.option(bool, "game-code", "Compile game code.") orelse false;
+    var build_platform_code = b.option(bool, "platform-code", "Compile platform code") orelse false;
+
+    //- cabarger: If both options are false assume user wanted to build both the
+    // game and platform code. (Instead of doing nothing...)
+    if (!build_game_code and !build_platform_code) {
+        build_game_code = true;
+        build_platform_code = true;
+    }
+
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -16,7 +30,6 @@ pub fn build(b: *std.Build) void {
 
     ////////////////////////////////
     //- cabarger: Game
-    const build_game_code = b.option(bool, "game-code", "When true builds game code") orelse false;
     if (build_game_code) {
         const game_code = b.addSharedLibrary(.{
             .name = "game-code", // NOTE(caleb): Explain the tmp prefix so future me knows why I did things this way.
@@ -24,6 +37,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        game_code.addOptions("build_options", build_options);
         game_code.linkLibC();
         game_code.addIncludePath(.{ .path = "raylib/src/" });
         game_code.addModule("third_party", third_party_module);
@@ -33,11 +47,7 @@ pub fn build(b: *std.Build) void {
 
     ////////////////////////////////
     //- cabarger: Platform
-    const build_platform_code = b.option(bool, "platform-code", "When true builds platform code") orelse false;
     if (build_platform_code) {
-        const build_options = b.addOptions();
-        build_options.addOption(bool, "enable_sound", b.option(bool, "enable-sound", "Enable sound") orelse false);
-
         const platform_code = b.addExecutable(.{
             .name = "small-planet",
             .root_source_file = .{ .path = "src/sp/rl_sp.zig" },

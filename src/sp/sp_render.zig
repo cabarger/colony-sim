@@ -413,6 +413,17 @@ pub fn debugDrawTileHitboxes(
     }
 }
 
+pub fn drawTitleScreenText(
+    platform_api: *const sp_platform.PlatformAPI,
+    game_state: *sp_platform.GameState,
+) void {
+    const title_screen_text_width = platform_api.measureText("TITLE SCREEN", glyph_size * 2);
+    platform_api.drawTextEx(game_state.rl_font, "TITLE SCREEN", .{
+        .x = @floatFromInt(@divFloor(platform_api.getScreenWidth(), 2) - @divFloor(title_screen_text_width, 2)),
+        .y = @floatFromInt(platform_api.getScreenHeight() - @divFloor(platform_api.getScreenHeight(), 5)),
+    }, glyph_size * 2, 1.0, rl.WHITE);
+}
+
 pub fn drawPauseText(
     platform_api: *const sp_platform.PlatformAPI,
     game_state: *sp_platform.GameState,

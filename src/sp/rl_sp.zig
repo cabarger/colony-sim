@@ -201,6 +201,10 @@ fn rlToSPKey(rl_key: c_int) ?sp_platform.GameInput.Key {
         result = .h;
     } else if (rl_key == rl.KEY_E) {
         result = .e;
+    } else if (rl_key == rl.KEY_M) {
+        result = .m;
+    } else if (rl_key == rl.KEY_T) {
+        result = .t;
     } else if (rl_key == rl.KEY_F1) {
         result = .f1;
     } else if (rl_key == rl.KEY_F2) {
