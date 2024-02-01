@@ -8,7 +8,7 @@
 //! barg8397@vandals.uidaho.edu
 //!
 
-//- cabarger: TODO
+//- TODO(cabarger):
 // Tree growth [ ]
 // Replace raylib Vector2 with builtin @Vector [ ]
 // Pass Inputs/Time as another field to updateAndRender function [ ]
@@ -66,6 +66,18 @@ const GameMode = enum(u8) {
     count,
 };
 
+//- NOTE(cabarger): Possible sub update/draw code paths depending on game mode:
+// title_screen:
+//    credits
+//    title screen itself
+//
+// play:
+//    board
+//    help
+//    resource management
+//    past/future resource use
+//
+
 ////////////////////////////////
 //- cabarger: Game code globals
 
@@ -97,118 +109,161 @@ export fn spUpdateAndRender(
         game_state.did_reload = false;
     }
 
-    ////////////////////////////////
-    //- cabarger: Update
-
-    //- cabarger: Handle inputs
-    const mouse_wheel_move = game_input.mouse_input.wheel_move;
-    if (mouse_wheel_move != 0) {
-        game_state.scale_factor += if (mouse_wheel_move == -1) -sp_render.scale_inc else sp_render.scale_inc;
-        game_state.scale_factor = base_math.clampF32(game_state.scale_factor, 0.25, 10.0);
-    }
-
-    if (@reduce(.And, game_input.last_mouse_input.p != game_input.mouse_input.p))
-        game_state.selected_tile_p = selectedTilePFromMouseP(platform_api, game_state, game_input);
-
-    if (game_input.mouse_input.right_click)
-        game_state.board_translation += game_input.mouse_input.p - game_input.last_mouse_input.p;
-
-    if (game_input.key_input.isKeyPressed(.r) and game_input.key_input.isKeyPressed(.left_shift)) {
-        game_state.draw_rot_state = @intCast(@mod(
-            @as(i8, @intCast(game_state.draw_rot_state)) - 1,
-            @intFromEnum(sp_render.DrawRotState.count),
-        ));
-    } else if (game_input.key_input.isKeyPressed(.r)) {
-        game_state.draw_rot_state = (game_state.draw_rot_state + 1) % @intFromEnum(sp_render.DrawRotState.count);
-    } else if (game_input.key_input.isKeyPressed(.h)) {
-        game_state.draw_3d = !game_state.draw_3d;
-    }
-    //- NOTE(cabarger): Advance the seed and generate a new world... This is for debugging!
-    else if (game_input.key_input.isKeyPressed(.kp_4) or game_input.key_input.isKeyPressed(.kp_6)) {
-        //- cabarger: RNG from new seed
-        if (game_input.key_input.isKeyPressed(.kp_6)) {
-            game_state.seed += 1;
-        } else if (game_input.key_input.isKeyPressed(.kp_4) and game_state.seed > 0)
-            game_state.seed -= 1;
-        game_state.xoshiro_256 = rand.DefaultPrng.init(game_state.seed);
-        std.debug.print("{d}\n", .{game_state.seed}); //- NOTE(cabarger): It's nice to see what seed we are working with.
-
-        entity_man.reset();
-        tile_p_components.reset();
-        resource_kind_components.reset();
-
-        sp_map.genWorld(
-            game_state.xoshiro_256.random(),
-            tileset,
-            world,
-            entity_man,
-            tile_p_components,
-            resource_kind_components,
-        ) catch unreachable;
-    } else if (game_input.key_input.isKeyPressed(.m)) {
-        game_state.game_mode = (game_state.game_mode + 1) % @intFromEnum(GameMode.count);
-    } else if (game_input.key_input.isKeyPressed(.t)) {
-        game_state.tick_granularity = (game_state.tick_granularity + 1) % @intFromEnum(sp_sim.TickGranularity.count);
-    } else if (game_input.key_input.isKeyPressed(.up)) {
-        game_state.selected_tile_p[1] -= 1;
-    } else if (game_input.key_input.isKeyPressed(.down)) {
-        game_state.selected_tile_p[1] += 1;
-    } else if (game_input.key_input.isKeyPressed(.left)) {
-        game_state.selected_tile_p[0] -= 1;
-    } else if (game_input.key_input.isKeyPressed(.right)) {
-        game_state.selected_tile_p[0] += 1;
-    } else if (game_input.key_input.isKeyPressed(.f1)) {
-        game_state.debug_draw_distance_map = !game_state.debug_draw_distance_map;
-    } else if (game_input.key_input.isKeyPressed(.f2)) {
-        game_state.debug_draw_grid_lines = !game_state.debug_draw_grid_lines;
-    } else if (game_input.key_input.isKeyPressed(.f3)) {
-        game_state.debug_draw_tile_height = !game_state.debug_draw_tile_height;
-    } else if (game_input.key_input.isKeyPressed(.f4)) {
-        game_state.debug_draw_tile_hitboxes = !game_state.debug_draw_tile_hitboxes;
-    } else if (game_input.key_input.isKeyPressed(.e)) {
-        game_state.view_mode = @intFromEnum(sp_map.ViewMode.world);
-    } else if (game_input.key_input.isKeyPressed(.enter) and
-        @as(sp_map.ViewMode, @enumFromInt(game_state.view_mode)) == .world)
-    {
-        const zero_vec: @Vector(2, i8) = @splat(0);
-        const dim_vec: @Vector(2, i8) = @splat(board_dim);
-        if (@reduce(.And, game_state.selected_tile_p >= zero_vec) and @reduce(.And, game_state.selected_tile_p < dim_vec)) {
-            game_state.view_mode = @intFromEnum(sp_map.ViewMode.region);
-            game_state.selected_region_p = @intCast(
-                sp_map.canonicalTileP(game_state.selected_tile_p, @enumFromInt(game_state.draw_rot_state)),
-            );
-        }
-    } else if (game_input.key_input.isKeyPressed(.space)) {
-        game_state.is_paused = !game_state.is_paused;
-        if (game_state.is_paused) { //- cabarger: Record amount of time spent paused.
-            game_state.pause_start_time = platform_api.getTime();
-        } else game_state.last_tick_time += platform_api.getTime() - game_state.pause_start_time;
-    }
-
-    //- cabarger: Simulation updates
-    const time_now = platform_api.getTime();
-    if (!game_state.is_paused and time_now - game_state.last_tick_time >= sp_sim.tick_rate_sec) {
-        game_state.last_tick_time = time_now;
-        //- cabarger: Game tick updates updates happen here. The initial thinking was something like
-        // do this tick n times depending on tick granularity.
-        sp_sim.updateWorkers();
-        sp_sim.updateGameTime(
-            @enumFromInt(game_state.tick_granularity),
-            &game_state.game_time_minute,
-            &game_state.game_time_hour,
-            &game_state.game_time_day,
-            &game_state.game_time_year,
-        );
-    }
-
-    ////////////////////////////////
-    //- cabarger: Render
-
-    platform_api.beginDrawing();
-    platform_api.clearBackground(.{ .r = 10, .g = 10, .b = 10, .a = 255 });
-
     switch (@as(GameMode, @enumFromInt(game_state.game_mode))) {
         .play => {
+            ////////////////////////////////
+            //- cabarger: Handle game inputs
+
+            //- cabarger: Update game scale factor on mouse scroll
+            const mouse_wheel_move = game_input.mouse_input.wheel_move;
+            if (mouse_wheel_move != 0) {
+                game_state.scale_factor += if (mouse_wheel_move == -1) -sp_render.scale_inc else sp_render.scale_inc;
+                game_state.scale_factor = base_math.clampF32(game_state.scale_factor, 0.25, 10.0);
+            }
+
+            //- cabarger: Get selected tile from mouse on mouse move
+            if (@reduce(.And, game_input.last_mouse_input.p != game_input.mouse_input.p))
+                game_state.selected_tile_p = selectedTilePFromMouseP(platform_api, game_state, game_input);
+
+            //- cabarger: Translate the board (panning) akin to the move tool in a paint program.
+            if (game_input.mouse_input.right_click)
+                game_state.board_translation += game_input.mouse_input.p - game_input.last_mouse_input.p;
+
+            //- cabarger: Rotate the board counter clockwise
+            if (game_input.key_input.isKeyPressed(.r) and game_input.key_input.isKeyPressed(.left_shift)) {
+                game_state.draw_rot_state = @intCast(@mod(
+                    @as(i8, @intCast(game_state.draw_rot_state)) - 1,
+                    @intFromEnum(sp_render.DrawRotState.count),
+                ));
+            }
+
+            //- cabarger: Rotate the board clockwise
+            if (game_input.key_input.isKeyPressed(.r)) {
+                game_state.draw_rot_state = (game_state.draw_rot_state + 1) % @intFromEnum(sp_render.DrawRotState.count);
+            }
+
+            //- cabarger: Toggle Z drawing of tiles
+            if (game_input.key_input.isKeyPressed(.h)) {
+                game_state.draw_3d = !game_state.draw_3d;
+            }
+
+            //- NOTE(cabarger): Advance the seed and generate a new world... This is for debugging!
+            if (game_input.key_input.isKeyPressed(.kp_4) or game_input.key_input.isKeyPressed(.kp_6)) {
+                //- cabarger: RNG from new seed
+                if (game_input.key_input.isKeyPressed(.kp_6)) {
+                    game_state.seed += 1;
+                } else if (game_input.key_input.isKeyPressed(.kp_4) and game_state.seed > 0)
+                    game_state.seed -= 1;
+                game_state.xoshiro_256 = rand.DefaultPrng.init(game_state.seed);
+                std.debug.print("{d}\n", .{game_state.seed}); //- NOTE(cabarger): It's nice to see what seed we are working with.
+
+                entity_man.reset();
+                tile_p_components.reset();
+                resource_kind_components.reset();
+
+                sp_map.genWorld(
+                    game_state.xoshiro_256.random(),
+                    tileset,
+                    world,
+                    entity_man,
+                    tile_p_components,
+                    resource_kind_components,
+                ) catch unreachable;
+            }
+
+            //- cabarger: Toggle game mode
+            if (game_input.key_input.isKeyPressed(.m)) {
+                game_state.game_mode = (game_state.game_mode + 1) % @intFromEnum(GameMode.count);
+            }
+
+            //- cabarger: Cycle tick granularity
+            if (game_input.key_input.isKeyPressed(.t)) {
+                game_state.tick_granularity = (game_state.tick_granularity + 1) % @intFromEnum(sp_sim.TickGranularity.count);
+            }
+
+            //- cabarger: Change selected tile via arrow key
+            if (game_input.key_input.isKeyPressed(.up)) {
+                game_state.selected_tile_p[1] -= 1;
+            } else if (game_input.key_input.isKeyPressed(.down)) {
+                game_state.selected_tile_p[1] += 1;
+            } else if (game_input.key_input.isKeyPressed(.left)) {
+                game_state.selected_tile_p[0] -= 1;
+            } else if (game_input.key_input.isKeyPressed(.right)) {
+                game_state.selected_tile_p[0] += 1;
+            }
+
+            //- cabarger: Debug draw distnace map
+            if (game_input.key_input.isKeyPressed(.f1)) {
+                game_state.debug_draw_distance_map = !game_state.debug_draw_distance_map;
+            }
+
+            //- cabarger: Debug draw tile grid
+            if (game_input.key_input.isKeyPressed(.f2)) {
+                game_state.debug_draw_grid_lines = !game_state.debug_draw_grid_lines;
+            }
+
+            //- cabarger: Debug draw tile height value overlay
+            if (game_input.key_input.isKeyPressed(.f3)) {
+                game_state.debug_draw_tile_height = !game_state.debug_draw_tile_height;
+            }
+
+            //- cabarger: Debug draw tile hitboxes
+            if (game_input.key_input.isKeyPressed(.f4)) {
+                game_state.debug_draw_tile_hitboxes = !game_state.debug_draw_tile_hitboxes;
+            }
+
+            //- cabarger: Change to world view
+            if (game_input.key_input.isKeyPressed(.e)) {
+                game_state.view_mode = @intFromEnum(sp_map.ViewMode.world);
+            }
+
+            //- cabarger: Select a region and change the view mode to regional
+            // NOTE: We can infer that we are in region mode if selected region is valid?
+            // this way we don't have to track a world/region mode, we just know.
+            if (game_input.key_input.isKeyPressed(.enter) and
+                @as(sp_map.ViewMode, @enumFromInt(game_state.view_mode)) == .world)
+            {
+                const zero_vec: @Vector(2, i8) = @splat(0);
+                const dim_vec: @Vector(2, i8) = @splat(board_dim);
+                if (@reduce(.And, game_state.selected_tile_p >= zero_vec) and @reduce(.And, game_state.selected_tile_p < dim_vec)) {
+                    game_state.view_mode = @intFromEnum(sp_map.ViewMode.region);
+                    game_state.selected_region_p = @intCast(
+                        sp_map.canonicalTileP(game_state.selected_tile_p, @enumFromInt(game_state.draw_rot_state)),
+                    );
+                }
+            }
+
+            //- cabarger: Pause the game
+            if (game_input.key_input.isKeyPressed(.space)) {
+                game_state.is_paused = !game_state.is_paused;
+                if (game_state.is_paused) { //- cabarger: Record amount of time spent paused.
+                    game_state.pause_start_time = platform_api.getTime();
+                } else game_state.last_tick_time += platform_api.getTime() - game_state.pause_start_time;
+            }
+
+            ////////////////////////////////
+            //- cabarger: Simulation updates
+
+            const time_now = platform_api.getTime();
+            if (!game_state.is_paused and time_now - game_state.last_tick_time >= sp_sim.tick_rate_sec) {
+                game_state.last_tick_time = time_now;
+                //- cabarger: Game tick updates updates happen here. The initial thinking was something like
+                // do stuff in the block n times depending on tick granularity.
+                sp_sim.updateWorkers();
+                sp_sim.updateGameTime(
+                    @enumFromInt(game_state.tick_granularity),
+                    &game_state.game_time_minute,
+                    &game_state.game_time_hour,
+                    &game_state.game_time_day,
+                    &game_state.game_time_year,
+                );
+            }
+
+            ////////////////////////////////
+            //- cabarger: Draw
+
+            platform_api.beginDrawing();
+            platform_api.clearBackground(.{ .r = 10, .g = 10, .b = 10, .a = 255 });
 
             //- FIXME(cabarger): I'm being lazy and passing game_state to these draw functions,
             // just pass what is needed.
@@ -272,15 +327,25 @@ export fn spUpdateAndRender(
                     entity_man,
                     resource_kind_components,
                 );
+            platform_api.endDrawing();
         },
-        .title_screen => sp_render.drawTitleScreenText(
-            platform_api,
-            game_state,
-        ),
+        .title_screen => {
+            //- cabarger: Title screen update
+            if (game_input.key_input.isKeyPressed(.m)) {
+                game_state.game_mode = (game_state.game_mode + 1) % @intFromEnum(GameMode.count);
+            }
+
+            //- cabarger: Title screen draw
+            platform_api.beginDrawing();
+            platform_api.clearBackground(.{ .r = 10, .g = 10, .b = 10, .a = 255 });
+            sp_render.drawTitleScreenText(
+                platform_api,
+                game_state,
+            );
+            platform_api.endDrawing();
+        },
         .count => unreachable,
     }
-
-    platform_api.endDrawing();
 }
 
 fn gameStateInit(game_state: *sp_platform.GameState, platform_api: *const sp_platform.PlatformAPI) void {
@@ -409,6 +474,7 @@ fn selectedTilePFromMouseP(
     game_input: *const sp_platform.GameInput,
 ) @Vector(2, i8) {
     var result: @Vector(2, i8) = .{ -1, -1 };
+    const scaled_tile_dim = scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor);
     if (game_state.draw_3d) {
         var row_index: isize = board_dim - 1;
         outer: while (row_index >= 0) : (row_index -= 1) {
@@ -425,37 +491,35 @@ fn selectedTilePFromMouseP(
                 var projected_p = sp_render.isoProj(
                     platform_api,
                     .{
-                        .x = @as(f32, @floatFromInt(col_index)) * scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[0],
-                        .y = @as(f32, @floatFromInt(row_index)) * scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[1],
+                        .x = @as(f32, @floatFromInt(col_index)) * scaled_tile_dim[0],
+                        .y = @as(f32, @floatFromInt(row_index)) * scaled_tile_dim[1],
                     },
-                    @intFromFloat(scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[0]),
-                    @intFromFloat(scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[1]),
+                    scaled_tile_dim[0],
+                    scaled_tile_dim[1],
                     game_state.board_translation,
                 );
                 projected_p.y -= @as(f32, @floatFromInt(height)) * (scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[1] / 2.0);
                 if (platform_api.checkCollisionPointRec(@bitCast(game_input.mouse_input.p), .{
                     .x = projected_p.x,
                     .y = projected_p.y,
-                    .width = scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[0],
-                    .height = scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[1] / 2.0,
+                    .width = scaled_tile_dim[0],
+                    .height = scaled_tile_dim[1] / 2.0,
                 })) {
-                    result = @Vector(2, i8){ @intCast(col_index), @intCast(row_index) };
+                    result = .{ @intCast(col_index), @intCast(row_index) };
                     break :outer;
                 }
             }
         }
     } else {
-        const deprojected_mouse_p = sp_render.isoInvert(
+        const deprojected_mouse_p: @Vector(2, f32) = @bitCast(sp_render.isoInvert(
             platform_api,
-            game_input.mouse_input.p - scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor) / @Vector(2, f32){ 2.0, 0.0 },
-            @intFromFloat(scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[0]),
-            @intFromFloat(scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[1]),
+            game_input.mouse_input.p - @Vector(2, f32){ scaled_tile_dim[0] / 2.0, 0.0 },
+            @intFromFloat(scaled_tile_dim[0]),
+            @intFromFloat(scaled_tile_dim[1]),
             game_state.board_translation,
-        );
-        result = @Vector(2, i8){
-            @intFromFloat(deprojected_mouse_p.x / scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[0]),
-            @intFromFloat(deprojected_mouse_p.y / scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[1]),
-        };
+        ));
+        const resultF32 = deprojected_mouse_p / scaled_tile_dim;
+        result = .{ @intFromFloat(resultF32[0]), @intFromFloat(resultF32[1]) };
     }
     return result;
 }

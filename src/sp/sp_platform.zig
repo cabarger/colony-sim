@@ -1,5 +1,5 @@
 //!
-//! small_planet_platform.zig
+//! sp_platform.zig
 //!
 //! Polymorphic Games
 //! zig 0.11.0
