@@ -68,9 +68,8 @@ export fn spUpdateAndRender(
     tctx: *base_thread_context.TCTX,
 ) void {
     _ = tctx;
-    _ = game_input;
 
-    //- cabarger: This is done exactly ONCE on the first game code load.
+    //- cabarger: This is done exactly ONCE on initial game code load.
     if (!game_state.did_init)
         gameStateInit(game_state, platform_api);
 
@@ -88,7 +87,7 @@ export fn spUpdateAndRender(
     ////////////////////////////////
     //- cabarger: Update
 
-    const mouse_wheel_move = platform_api.getMouseWheelMove();
+    const mouse_wheel_move = game_input.mouse_input.wheel_move;
     if (mouse_wheel_move != 0) {
         game_state.scale_factor += if (mouse_wheel_move == -1) -sp_render.scale_inc else sp_render.scale_inc;
         game_state.scale_factor = base_math.clampF32(game_state.scale_factor, 0.25, 10.0);
@@ -99,9 +98,7 @@ export fn spUpdateAndRender(
         .y = @as(f32, @floatFromInt(tileset.tile_height)) * game_state.scale_factor,
     };
 
-    const new_mouse_p = platform_api.getMousePosition();
-    const mouse_moved = @reduce(.And, @as(@Vector(2, f32), @bitCast(game_state.mouse_p)) != @as(@Vector(2, f32), @bitCast(new_mouse_p)));
-    game_state.mouse_p = new_mouse_p;
+    const mouse_moved = @reduce(.And, game_input.last_mouse_input.p != game_input.mouse_input.p);
 
     if (mouse_moved) {
         //- cabarger: FIXME Iterate over tiles from the bottom right to top left, this way
@@ -129,7 +126,7 @@ export fn spUpdateAndRender(
                         game_state.board_translation,
                     );
                     projected_p.y -= @as(f32, @floatFromInt(height)) * (scaled_tile_dim.y / 2.0);
-                    if (platform_api.checkCollisionPointRec(game_state.mouse_p, .{
+                    if (platform_api.checkCollisionPointRec(@bitCast(game_input.mouse_input.p), .{
                         .x = projected_p.x,
                         .y = projected_p.y,
                         .width = scaled_tile_dim.x,
@@ -143,7 +140,7 @@ export fn spUpdateAndRender(
         } else {
             const deprojected_mouse_p = sp_render.isoInvert(
                 platform_api,
-                @as(@Vector(2, f32), @bitCast(game_state.mouse_p)) - @Vector(2, f32){ scaled_tile_dim.x / 2.0, 0.0 },
+                game_input.mouse_input.p - @Vector(2, f32){ scaled_tile_dim.x / 2.0, 0.0 },
                 @intFromFloat(scaled_tile_dim.x),
                 @intFromFloat(scaled_tile_dim.y),
                 game_state.board_translation,
@@ -153,82 +150,78 @@ export fn spUpdateAndRender(
         }
     }
 
-    if (platform_api.isMouseButtonDown(rl.MOUSE_BUTTON_RIGHT))
-        game_state.board_translation += @bitCast(platform_api.getMouseDelta());
+    if (game_input.mouse_input.right_click)
+        game_state.board_translation += game_input.mouse_input.p - game_input.last_mouse_input.p;
 
-    var key_pressed = platform_api.getKeyPressed();
-    while (key_pressed != 0) { //- cabarger: Handle input
-        if (key_pressed == rl.KEY_R and platform_api.isKeyDown(rl.KEY_LEFT_SHIFT)) {
-            draw_rot_state =
-                @enumFromInt(@mod(@as(i8, @intCast(game_state.draw_rot_state)) - 1, @intFromEnum(sp_render.DrawRotState.count)));
-            game_state.draw_rot_state = @intFromEnum(draw_rot_state);
-        } else if (key_pressed == rl.KEY_R) {
-            draw_rot_state =
-                @enumFromInt((game_state.draw_rot_state + 1) % @intFromEnum(sp_render.DrawRotState.count));
-            game_state.draw_rot_state = @intFromEnum(draw_rot_state);
-        } else if (key_pressed == rl.KEY_H) {
-            game_state.draw_3d = !game_state.draw_3d;
-        } else if (key_pressed == rl.KEY_KP_6 or key_pressed == rl.KEY_KP_4) {
-            if (key_pressed == rl.KEY_KP_6) {
-                game_state.seed += 1;
-            } else if (key_pressed == rl.KEY_KP_4 and game_state.seed > 0)
-                game_state.seed -= 1;
-            std.debug.print("{d}\n", .{game_state.seed});
-            game_state.xoshiro_256 = rand.DefaultPrng.init(game_state.seed);
+    if (game_input.key_input.isKeyPressed(.r) and game_input.key_input.isKeyPressed(.left_shift)) {
+        draw_rot_state =
+            @enumFromInt(@mod(@as(i8, @intCast(game_state.draw_rot_state)) - 1, @intFromEnum(sp_render.DrawRotState.count)));
+        game_state.draw_rot_state = @intFromEnum(draw_rot_state);
+    } else if (game_input.key_input.isKeyPressed(.r)) {
+        draw_rot_state =
+            @enumFromInt((game_state.draw_rot_state + 1) % @intFromEnum(sp_render.DrawRotState.count));
+        game_state.draw_rot_state = @intFromEnum(draw_rot_state);
+    } else if (game_input.key_input.isKeyPressed(.h)) {
+        game_state.draw_3d = !game_state.draw_3d;
+    } else if (game_input.key_input.isKeyPressed(.kp_4) or game_input.key_input.isKeyPressed(.kp_6)) {
+        if (game_input.key_input.isKeyPressed(.kp_6)) {
+            game_state.seed += 1;
+        } else if (game_input.key_input.isKeyPressed(.kp_4) and game_state.seed > 0)
+            game_state.seed -= 1;
+        std.debug.print("{d}\n", .{game_state.seed});
+        game_state.xoshiro_256 = rand.DefaultPrng.init(game_state.seed);
 
-            while (entity_man.free_entities.capacity != entity_man.free_entities.items.len)
-                entity_man.free_entities.insertAssumeCapacity(entity_man.free_entities.items.len, entity_man.free_entities.items.len);
+        while (entity_man.free_entities.capacity != entity_man.free_entities.items.len)
+            entity_man.free_entities.insertAssumeCapacity(entity_man.free_entities.items.len, entity_man.free_entities.items.len);
 
-            tile_p_components.reset();
-            resource_kind_components.reset();
+        tile_p_components.reset();
+        resource_kind_components.reset();
 
-            sp_map.genWorld(
-                game_state.xoshiro_256.random(),
-                tileset,
-                world,
-                entity_man,
-                tile_p_components,
-                resource_kind_components,
-            ) catch unreachable;
-        } else if (key_pressed == rl.KEY_UP) {
-            tick_granularity =
-                @enumFromInt((game_state.tick_granularity + 1) % @intFromEnum(sp_sim.TickGranularity.count));
-            game_state.tick_granularity = @intFromEnum(tick_granularity);
-            game_state.selected_tile_p[1] -= 1;
-        } else if (key_pressed == rl.KEY_DOWN) {
-            game_state.selected_tile_p[1] += 1;
-        } else if (key_pressed == rl.KEY_LEFT) {
-            game_state.selected_tile_p[0] -= 1;
-        } else if (key_pressed == rl.KEY_RIGHT) {
-            game_state.selected_tile_p[0] += 1;
-        } else if (key_pressed == rl.KEY_F1) {
-            game_state.debug_draw_distance_map = !game_state.debug_draw_distance_map;
-        } else if (key_pressed == rl.KEY_F2) {
-            game_state.debug_draw_grid_lines = !game_state.debug_draw_grid_lines;
-        } else if (key_pressed == rl.KEY_F3) {
-            game_state.debug_draw_tile_height = !game_state.debug_draw_tile_height;
-        } else if (key_pressed == rl.KEY_F4) {
-            game_state.debug_draw_tile_hitboxes = !game_state.debug_draw_tile_hitboxes;
-        } else if (key_pressed == rl.KEY_E) {
-            view_mode = .world;
+        sp_map.genWorld(
+            game_state.xoshiro_256.random(),
+            tileset,
+            world,
+            entity_man,
+            tile_p_components,
+            resource_kind_components,
+        ) catch unreachable;
+    } else if (game_input.key_input.isKeyPressed(.up)) {
+        tick_granularity =
+            @enumFromInt((game_state.tick_granularity + 1) % @intFromEnum(sp_sim.TickGranularity.count));
+        game_state.tick_granularity = @intFromEnum(tick_granularity);
+        game_state.selected_tile_p[1] -= 1;
+    } else if (game_input.key_input.isKeyPressed(.down)) {
+        game_state.selected_tile_p[1] += 1;
+    } else if (game_input.key_input.isKeyPressed(.left)) {
+        game_state.selected_tile_p[0] -= 1;
+    } else if (game_input.key_input.isKeyPressed(.right)) {
+        game_state.selected_tile_p[0] += 1;
+    } else if (game_input.key_input.isKeyPressed(.f1)) {
+        game_state.debug_draw_distance_map = !game_state.debug_draw_distance_map;
+    } else if (game_input.key_input.isKeyPressed(.f2)) {
+        game_state.debug_draw_grid_lines = !game_state.debug_draw_grid_lines;
+    } else if (game_input.key_input.isKeyPressed(.f3)) {
+        game_state.debug_draw_tile_height = !game_state.debug_draw_tile_height;
+    } else if (game_input.key_input.isKeyPressed(.f4)) {
+        game_state.debug_draw_tile_hitboxes = !game_state.debug_draw_tile_hitboxes;
+    } else if (game_input.key_input.isKeyPressed(.e)) {
+        view_mode = .world;
+        game_state.view_mode = @intFromEnum(view_mode);
+    } else if (game_input.key_input.isKeyPressed(.enter) and view_mode == .world) {
+        const zero_vec: @Vector(2, i8) = @splat(0);
+        const dim_vec: @Vector(2, i8) = @splat(board_dim);
+        if (@reduce(.And, game_state.selected_tile_p >= zero_vec) and @reduce(.And, game_state.selected_tile_p < dim_vec)) {
+            view_mode = .region;
             game_state.view_mode = @intFromEnum(view_mode);
-        } else if (key_pressed == rl.KEY_ENTER and view_mode == .world) {
-            const zero_vec: @Vector(2, i8) = @splat(0);
-            const dim_vec: @Vector(2, i8) = @splat(board_dim);
-            if (@reduce(.And, game_state.selected_tile_p >= zero_vec) and @reduce(.And, game_state.selected_tile_p < dim_vec)) {
-                view_mode = .region;
-                game_state.view_mode = @intFromEnum(view_mode);
-                game_state.selected_region_p = @intCast(
-                    sp_map.canonicalTileP(game_state.selected_tile_p, @enumFromInt(game_state.draw_rot_state)),
-                );
-            }
-        } else if (key_pressed == rl.KEY_SPACE) {
-            game_state.is_paused = !game_state.is_paused;
-            if (game_state.is_paused) { //- cabarger: Record amount of time spent paused.
-                game_state.pause_start_time = platform_api.getTime();
-            } else game_state.last_tick_time += platform_api.getTime() - game_state.pause_start_time;
+            game_state.selected_region_p = @intCast(
+                sp_map.canonicalTileP(game_state.selected_tile_p, @enumFromInt(game_state.draw_rot_state)),
+            );
         }
-        key_pressed = platform_api.getKeyPressed();
+    } else if (game_input.key_input.isKeyPressed(.space)) {
+        game_state.is_paused = !game_state.is_paused;
+        if (game_state.is_paused) { //- cabarger: Record amount of time spent paused.
+            game_state.pause_start_time = platform_api.getTime();
+        } else game_state.last_tick_time += platform_api.getTime() - game_state.pause_start_time;
     }
 
     const time_now = platform_api.getTime();

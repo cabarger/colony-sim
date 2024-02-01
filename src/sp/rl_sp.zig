@@ -20,6 +20,7 @@ const base_thread_context = base.base_thread_context;
 const rl = third_party.rl;
 const fs = std.fs;
 const heap = std.heap;
+const mem = std.mem;
 
 const FixedBufferAllocator = heap.FixedBufferAllocator;
 
@@ -58,8 +59,7 @@ pub fn main() !void {
     }
 
     const platform_api = platformAPIInit();
-
-    var game_input: GameInput = undefined;
+    var game_input = mem.zeroes(sp_platform.GameInput);
 
     const track1 = rl.LoadMusicStream("assets/music/track_1.wav");
     rl.PlayMusicStream(track1);
@@ -102,7 +102,27 @@ pub fn main() !void {
             game_state.did_reload = true; //- cabarger: Notify game code that it was reloaded.
         }
 
+        //- cabarger: Mouse inputs
+        game_input.last_mouse_input = game_input.mouse_input;
+        game_input.mouse_input = mem.zeroes(sp_platform.GameInput.MouseInput);
+        game_input.mouse_input.wheel_move = rl.GetMouseWheelMove();
+        game_input.mouse_input.p = @bitCast(rl.GetMousePosition());
+        game_input.mouse_input.left_click = rl.IsMouseButtonDown(rl.MOUSE_BUTTON_LEFT);
+        game_input.mouse_input.right_click = rl.IsMouseButtonDown(rl.MOUSE_BUTTON_RIGHT);
+
+        //- cabarger: Key inputs
+        game_input.last_key_input = game_input.key_input;
+        game_input.key_input = mem.zeroes(sp_platform.GameInput.KeyInput);
+        var key_pressed = rl.GetKeyPressed();
+        while (key_pressed != 0) {
+            const sp_key = rlToSPKey(key_pressed);
+            if (sp_key != null)
+                game_input.key_input.setKeyPressed(sp_key.?);
+            key_pressed = rl.GetKeyPressed();
+        }
+
         rl.UpdateMusicStream(track1);
+
         spUpdateAndRender(
             &platform_api,
             &game_state,
@@ -169,21 +189,53 @@ fn loadLibraryFunction(
     return result;
 }
 
+fn rlToSPKey(rl_key: c_int) ?sp_platform.GameInput.Key {
+    var result: ?sp_platform.GameInput.Key = null;
+    if (rl_key == rl.KEY_R) {
+        result = .r;
+    } else if (rl_key == rl.KEY_H) {
+        result = .h;
+    } else if (rl_key == rl.KEY_E) {
+        result = .e;
+    } else if (rl_key == rl.KEY_F1) {
+        result = .f1;
+    } else if (rl_key == rl.KEY_F2) {
+        result = .f2;
+    } else if (rl_key == rl.KEY_F3) {
+        result = .f3;
+    } else if (rl_key == rl.KEY_F4) {
+        result = .f4;
+    } else if (rl_key == rl.KEY_LEFT_SHIFT) {
+        result = .left_shift;
+    } else if (rl_key == rl.KEY_ENTER) {
+        result = .enter;
+    } else if (rl_key == rl.KEY_SPACE) {
+        result = .space;
+    } else if (rl_key == rl.KEY_KP_6) {
+        result = .kp_6;
+    } else if (rl_key == rl.KEY_KP_4) {
+        result = .kp_4;
+    } else if (rl_key == rl.KEY_UP) {
+        result = .up;
+    } else if (rl_key == rl.KEY_DOWN) {
+        result = .down;
+    } else if (rl_key == rl.KEY_RIGHT) {
+        result = .right;
+    } else if (rl_key == rl.KEY_LEFT) {
+        result = .left;
+    }
+    return result;
+}
+
 fn platformAPIInit() sp_platform.PlatformAPI {
     return sp_platform.PlatformAPI{
         .loadTexture = loadTexture,
         .getFontDefault = getFontDefault,
-        .getMouseWheelMove = getMouseWheelMove,
-        .getMousePosition = getMousePosition,
-        .isMouseButtonDown = isMouseButtonDown,
-        .isKeyDown = isKeyDown,
         .getScreenWidth = getScreenWidth,
         .getScreenHeight = getScreenHeight,
         .matrixInvert = matrixInvert,
         .drawTexturePro = drawTexturePro,
-        .getMouseDelta = getMouseDelta,
         .getTime = getTime,
-        .getKeyPressed = getKeyPressed,
         .beginDrawing = beginDrawing,
         .clearBackground = clearBackground,
         .drawLineEx = drawLineEx,
@@ -207,22 +259,6 @@ fn getFontDefault() rl.Font {
     return rl.GetFontDefault();
 }
 
-fn getMouseWheelMove() f32 {
-    return rl.GetMouseWheelMove();
-}
-
-fn getMousePosition() rl.Vector2 {
-    return rl.GetMousePosition();
-}
-
-fn isMouseButtonDown(mouse_button: c_int) bool {
-    return rl.IsMouseButtonDown(mouse_button);
-}
-
-fn isKeyDown(key: c_int) bool {
-    return rl.IsKeyDown(key);
-}
-
 fn getScreenWidth() c_int {
     return rl.GetScreenWidth();
 }
@@ -239,16 +275,8 @@ fn drawTexturePro(texture: rl.Texture, source: rl.Rectangle, dest: rl.Rectangle,
     return rl.DrawTexturePro(texture, source, dest, origin, rotation, tint);
 }
 
-fn getMouseDelta() rl.Vector2 {
-    return rl.GetMouseDelta();
-}
-
 fn getTime() f64 {
     return rl.GetTime();
-}
-
-fn getKeyPressed() c_int {
-    return rl.GetKeyPressed();
 }
 
 fn beginDrawing() void {

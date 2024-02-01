@@ -38,7 +38,7 @@ pub const GameInput = struct {
         right_click: bool,
     };
 
-    pub const KeyPressed = enum(u8) {
+    pub const Key = enum(u8) {
         r = 0,
         h,
         e,
@@ -59,31 +59,40 @@ pub const GameInput = struct {
         down,
         right,
         left,
+
+        count,
     };
 
-    pub const KeyInput = struct {};
+    pub const KeyInput = struct {
+        keys_pressed: bit_set.IntegerBitSet(@intFromEnum(Key.count)) =
+            bit_set.IntegerBitSet(@intFromEnum(Key.count)).initEmpty(),
+
+        pub inline fn setKeyPressed(key_input: *KeyInput, key: Key) void {
+            key_input.keys_pressed.set(@intFromEnum(key));
+        }
+
+        pub inline fn isKeyPressed(key_input: *KeyInput, key: Key) bool {
+            return key_input.keys_pressed.isSet(@intFromEnum(key));
+        }
+    };
 
     mouse_input: MouseInput,
     last_mouse_input: MouseInput,
 
     key_input: KeyInput,
     last_key_input: KeyInput,
+
+    // time: f64,
 };
 
 pub const PlatformAPI = struct {
     loadTexture: *const fn ([:0]const u8) rl.Texture,
     getFontDefault: *const fn () rl.Font,
-    getMouseWheelMove: *const fn () f32,
-    getMousePosition: *const fn () rl.Vector2,
-    isMouseButtonDown: *const fn (c_int) bool,
-    isKeyDown: *const fn (c_int) bool,
     getScreenWidth: *const fn () c_int,
     getScreenHeight: *const fn () c_int,
     matrixInvert: *const fn (rl.Matrix) rl.Matrix,
     drawTexturePro: *const fn (rl.Texture, rl.Rectangle, rl.Rectangle, rl.Vector2, f32, rl.Color) void,
-    getMouseDelta: *const fn () rl.Vector2,
     getTime: *const fn () f64,
-    getKeyPressed: *const fn () c_int,
     beginDrawing: *const fn () void,
     clearBackground: *const fn (rl.Color) void,
     drawLineEx: *const fn (rl.Vector2, rl.Vector2, f32, rl.Color) void,
@@ -154,7 +163,4 @@ pub const GameState = struct {
     draw_rot_state: u8,
 
     rl_font: rl.Font,
-
-    // Inputs TODO(caleb): Pull these out into a GameInput struct.
-    mouse_p: rl.Vector2,
 };
