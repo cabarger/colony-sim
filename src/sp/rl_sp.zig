@@ -1,5 +1,5 @@
 //!
-//! rl_small_planet.zig
+//! rl_sp.zig
 //!
 //! Polymorphic Games
 //! zig 0.11.0
@@ -14,6 +14,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 const third_party = @import("third_party");
 const base = @import("base");
+const build_options = @import("build_options");
 
 const sp_platform = @import("sp_platform.zig");
 const base_thread_context = base.base_thread_context;
@@ -24,6 +25,8 @@ const mem = std.mem;
 
 const FixedBufferAllocator = heap.FixedBufferAllocator;
 
+const debug_sound_enabled = false;
+
 pub extern "c" fn dlerror() ?[*:0]const u8;
 
 pub fn main() !void {
@@ -31,7 +34,10 @@ pub fn main() !void {
     rl.SetWindowState(rl.FLAG_WINDOW_RESIZABLE);
     rl.InitAudioDevice();
 
-    //- cabarger: Get that thread context
+    var game_state: sp_platform.GameState = undefined;
+    game_state.did_init = false;
+    const platform_api = platformAPIInit();
+    var game_input = mem.zeroes(sp_platform.GameInput);
     var tctx: base_thread_context.TCTX = undefined;
     base_thread_context.tctxInitAndEquip(&tctx);
 
@@ -43,27 +49,24 @@ pub fn main() !void {
         var platform_mem = ally.alloc(u8, 1024) catch unreachable;
         platform_fba = FixedBufferAllocator.init(platform_mem);
     }
+
     //- cabarger: Game memory
-    var game_state: sp_platform.GameState = undefined;
     {
         var arena = base_thread_context.tctxGetScratch(null, 0) orelse unreachable;
         const ally = arena.allocator();
         var perm_mem = ally.alloc(u8, 1024 * 1024 * 5) catch unreachable;
         var scratch_mem = ally.alloc(u8, 1024 * 1024) catch unreachable;
 
-        //- NOTE(cabarger): Game state get's initialized in game code but these
-        // three fields MUST be set here.
         game_state.perm_fba = FixedBufferAllocator.init(perm_mem);
         game_state.scratch_fba = FixedBufferAllocator.init(scratch_mem);
-        game_state.did_init = false;
     }
 
-    const platform_api = platformAPIInit();
-    var game_input = mem.zeroes(sp_platform.GameInput);
-
+    //- cabarger: Music
     const track1 = rl.LoadMusicStream("assets/music/track_1.wav");
-    rl.PlayMusicStream(track1);
-    rl.SetMusicVolume(track1, 1.0);
+    if (build_options.enable_sound) {
+        rl.PlayMusicStream(track1);
+        rl.SetMusicVolume(track1, 1.0);
+    }
 
     const rel_lib_path = "./zig-out/lib/";
     const active_game_code_path = try fs.path.join(
@@ -121,7 +124,8 @@ pub fn main() !void {
             key_pressed = rl.GetKeyPressed();
         }
 
-        rl.UpdateMusicStream(track1);
+        if (build_options.enable_sound)
+            rl.UpdateMusicStream(track1);
 
         spUpdateAndRender(
             &platform_api,
@@ -197,6 +201,10 @@ fn rlToSPKey(rl_key: c_int) ?sp_platform.GameInput.Key {
         result = .h;
     } else if (rl_key == rl.KEY_E) {
         result = .e;
+    } else if (rl_key == rl.KEY_M) {
+        result = .m;
+    } else if (rl_key == rl.KEY_T) {
+        result = .t;
     } else if (rl_key == rl.KEY_F1) {
         result = .f1;
     } else if (rl_key == rl.KEY_F2) {
