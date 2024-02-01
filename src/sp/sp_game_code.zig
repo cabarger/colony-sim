@@ -101,14 +101,14 @@ export fn spUpdateAndRender(
     const mouse_moved = @reduce(.And, game_input.last_mouse_input.p != game_input.mouse_input.p);
 
     if (mouse_moved) {
-        //- cabarger: FIXME Iterate over tiles from the bottom right to top left, this way
-        // if two tiles overlap the selected tile is allways the one in front.
         if (game_state.draw_3d) {
             game_state.selected_tile_p = .{ -1, -1 };
-            outer: for (0..board_dim) |row_index| {
-                for (0..board_dim) |col_index| {
+            var row_index: isize = board_dim - 1;
+            outer: while (row_index >= 0) : (row_index -= 1) {
+                var col_index: isize = board_dim - 1;
+                while (col_index >= 0) : (col_index -= 1) {
                     const canonical_board_p: @Vector(2, usize) = @intCast(
-                        sp_map.canonicalTileP(@intCast(@Vector(2, usize){ col_index, row_index }), @enumFromInt(game_state.draw_rot_state)),
+                        sp_map.canonicalTileP(@intCast(@Vector(2, usize){ @intCast(col_index), @intCast(row_index) }), @enumFromInt(game_state.draw_rot_state)),
                     );
                     const height = switch (@as(sp_map.ViewMode, @enumFromInt(game_state.view_mode))) {
                         .region => world.region_data[game_state.selected_region_p[1] * board_dim + game_state.selected_region_p[0]]

@@ -32,7 +32,7 @@ const Random = rand.Random;
 
 const board_dim = sp_map.board_dim;
 pub const scale_inc: f32 = 0.25;
-pub const glyph_size = 32;
+pub const glyph_size = 28;
 
 pub const DrawRotState = enum(u8) {
     rotate_nonce = 0,
