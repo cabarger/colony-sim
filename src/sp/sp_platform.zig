@@ -10,8 +10,11 @@
 
 const std = @import("std");
 const third_party = @import("third_party");
+const base = @import("base");
 
+const base_thread_context = base.base_thread_context;
 const rl = third_party.rl;
+const bit_set = std.bit_set;
 const math = std.math;
 const fmt = std.fmt;
 const mem = std.mem;
@@ -20,20 +23,76 @@ const rand = std.rand;
 
 const FixedBufferAllocator = std.heap.FixedBufferAllocator;
 
+pub const sp_update_and_render_sig = *fn (
+    platform_api: *const PlatformAPI,
+    game_state: *GameState,
+    game_input: *GameInput,
+    tctx: *base_thread_context.TCTX,
+) void;
+
+pub const GameInput = struct {
+    pub const MouseInput = struct {
+        wheel_move: f32,
+        p: @Vector(2, f32),
+        left_click: bool,
+        right_click: bool,
+    };
+
+    pub const Key = enum(u8) {
+        r = 0,
+        h,
+        e,
+
+        f1,
+        f2,
+        f3,
+        f4,
+
+        left_shift,
+        enter,
+        space,
+
+        kp_6,
+        kp_4,
+
+        up,
+        down,
+        right,
+        left,
+
+        count,
+    };
+
+    pub const KeyInput = struct {
+        keys_pressed: bit_set.IntegerBitSet(@intFromEnum(Key.count)) =
+            bit_set.IntegerBitSet(@intFromEnum(Key.count)).initEmpty(),
+
+        pub inline fn setKeyPressed(key_input: *KeyInput, key: Key) void {
+            key_input.keys_pressed.set(@intFromEnum(key));
+        }
+
+        pub inline fn isKeyPressed(key_input: *KeyInput, key: Key) bool {
+            return key_input.keys_pressed.isSet(@intFromEnum(key));
+        }
+    };
+
+    mouse_input: MouseInput,
+    last_mouse_input: MouseInput,
+
+    key_input: KeyInput,
+    last_key_input: KeyInput,
+
+    // time: f64,
+};
+
 pub const PlatformAPI = struct {
     loadTexture: *const fn ([:0]const u8) rl.Texture,
     getFontDefault: *const fn () rl.Font,
-    getMouseWheelMove: *const fn () f32,
-    getMousePosition: *const fn () rl.Vector2,
-    isMouseButtonDown: *const fn (c_int) bool,
-    isKeyDown: *const fn (c_int) bool,
     getScreenWidth: *const fn () c_int,
     getScreenHeight: *const fn () c_int,
     matrixInvert: *const fn (rl.Matrix) rl.Matrix,
     drawTexturePro: *const fn (rl.Texture, rl.Rectangle, rl.Rectangle, rl.Vector2, f32, rl.Color) void,
-    getMouseDelta: *const fn () rl.Vector2,
     getTime: *const fn () f64,
-    getKeyPressed: *const fn () c_int,
     beginDrawing: *const fn () void,
     clearBackground: *const fn (rl.Color) void,
     drawLineEx: *const fn (rl.Vector2, rl.Vector2, f32, rl.Color) void,
@@ -50,7 +109,10 @@ pub const PlatformAPI = struct {
 
 // TODO(caleb): Function type for smallPlanetGameCode()
 pub const GameState = struct {
+    /// False prior to initial game code load otherwise true.
     did_init: bool,
+    /// True when game code is recompiled.
+    did_reload: bool,
     perm_fba: FixedBufferAllocator,
     scratch_fba: FixedBufferAllocator,
 
@@ -101,7 +163,4 @@ pub const GameState = struct {
     draw_rot_state: u8,
 
     rl_font: rl.Font,
-
-    // Inputs TODO(caleb): Pull these out into a GameInput struct.
-    mouse_p: rl.Vector2,
 };

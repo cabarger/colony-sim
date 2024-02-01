@@ -39,6 +39,7 @@ pub fn build(b: *std.Build) void {
         platform_code.linkLibC();
         platform_code.addIncludePath(.{ .path = "raylib/src/" });
         platform_code.addModule("third_party", third_party_module);
+        platform_code.addModule("base", base_module);
         platform_code.linkSystemLibrary("dl");
         platform_code.linkLibrary(raylib);
         b.installArtifact(platform_code);
