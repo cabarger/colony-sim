@@ -494,8 +494,8 @@ fn selectedTilePFromMouseP(
                         .x = @as(f32, @floatFromInt(col_index)) * scaled_tile_dim[0],
                         .y = @as(f32, @floatFromInt(row_index)) * scaled_tile_dim[1],
                     },
-                    scaled_tile_dim[0],
-                    scaled_tile_dim[1],
+                    @intFromFloat(scaled_tile_dim[0]),
+                    @intFromFloat(scaled_tile_dim[1]),
                     game_state.board_translation,
                 );
                 projected_p.y -= @as(f32, @floatFromInt(height)) * (scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[1] / 2.0);
