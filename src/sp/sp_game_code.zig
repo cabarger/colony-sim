@@ -129,7 +129,7 @@ export fn spUpdateAndRender(
                 game_state.board_translation += game_input.mouse_input.p - game_input.last_mouse_input.p;
 
             //- cabarger: Rotate the board counter clockwise
-            if (game_input.key_input.isKeyPressed(.r) and game_input.key_input.isKeyPressed(.left_shift)) {
+            if (game_input.keyPressed(.r) and game_input.keyHeld(.left_shift)) {
                 game_state.draw_rot_state = @intCast(@mod(
                     @as(i8, @intCast(game_state.draw_rot_state)) - 1,
                     @intFromEnum(sp_render.DrawRotState.count),
@@ -137,21 +137,21 @@ export fn spUpdateAndRender(
             }
 
             //- cabarger: Rotate the board clockwise
-            if (game_input.key_input.isKeyPressed(.r)) {
+            else if (game_input.keyPressed(.r)) {
                 game_state.draw_rot_state = (game_state.draw_rot_state + 1) % @intFromEnum(sp_render.DrawRotState.count);
             }
 
             //- cabarger: Toggle Z drawing of tiles
-            if (game_input.key_input.isKeyPressed(.h)) {
+            if (game_input.keyPressed(.h)) {
                 game_state.draw_3d = !game_state.draw_3d;
             }
 
             //- NOTE(cabarger): Advance the seed and generate a new world... This is for debugging!
-            if (game_input.key_input.isKeyPressed(.kp_4) or game_input.key_input.isKeyPressed(.kp_6)) {
+            if (game_input.keyPressed(.kp_4) or game_input.keyPressed(.kp_6)) {
                 //- cabarger: RNG from new seed
-                if (game_input.key_input.isKeyPressed(.kp_6)) {
+                if (game_input.keyPressed(.kp_6)) {
                     game_state.seed += 1;
-                } else if (game_input.key_input.isKeyPressed(.kp_4) and game_state.seed > 0)
+                } else if (game_input.keyPressed(.kp_4) and game_state.seed > 0)
                     game_state.seed -= 1;
                 game_state.xoshiro_256 = rand.DefaultPrng.init(game_state.seed);
                 std.debug.print("{d}\n", .{game_state.seed}); //- NOTE(cabarger): It's nice to see what seed we are working with.
@@ -171,48 +171,48 @@ export fn spUpdateAndRender(
             }
 
             //- cabarger: Toggle game mode
-            if (game_input.key_input.isKeyPressed(.m)) {
+            if (game_input.keyPressed(.m)) {
                 game_state.game_mode = (game_state.game_mode + 1) % @intFromEnum(GameMode.count);
             }
 
             //- cabarger: Cycle tick granularity
-            if (game_input.key_input.isKeyPressed(.t)) {
+            if (game_input.keyPressed(.t)) {
                 game_state.tick_granularity = (game_state.tick_granularity + 1) % @intFromEnum(sp_sim.TickGranularity.count);
             }
 
             //- cabarger: Change selected tile via arrow key
-            if (game_input.key_input.isKeyPressed(.up)) {
+            if (game_input.keyPressed(.up)) {
                 game_state.selected_tile_p[1] -= 1;
-            } else if (game_input.key_input.isKeyPressed(.down)) {
+            } else if (game_input.keyPressed(.down)) {
                 game_state.selected_tile_p[1] += 1;
-            } else if (game_input.key_input.isKeyPressed(.left)) {
+            } else if (game_input.keyPressed(.left)) {
                 game_state.selected_tile_p[0] -= 1;
-            } else if (game_input.key_input.isKeyPressed(.right)) {
+            } else if (game_input.keyPressed(.right)) {
                 game_state.selected_tile_p[0] += 1;
             }
 
             //- cabarger: Debug draw distnace map
-            if (game_input.key_input.isKeyPressed(.f1)) {
+            if (game_input.keyPressed(.f1)) {
                 game_state.debug_draw_distance_map = !game_state.debug_draw_distance_map;
             }
 
             //- cabarger: Debug draw tile grid
-            if (game_input.key_input.isKeyPressed(.f2)) {
+            if (game_input.keyPressed(.f2)) {
                 game_state.debug_draw_grid_lines = !game_state.debug_draw_grid_lines;
             }
 
             //- cabarger: Debug draw tile height value overlay
-            if (game_input.key_input.isKeyPressed(.f3)) {
+            if (game_input.keyPressed(.f3)) {
                 game_state.debug_draw_tile_height = !game_state.debug_draw_tile_height;
             }
 
             //- cabarger: Debug draw tile hitboxes
-            if (game_input.key_input.isKeyPressed(.f4)) {
+            if (game_input.keyPressed(.f4)) {
                 game_state.debug_draw_tile_hitboxes = !game_state.debug_draw_tile_hitboxes;
             }
 
             //- cabarger: Pause the game
-            if (game_input.key_input.isKeyPressed(.space)) {
+            if (game_input.keyPressed(.space)) {
                 game_state.is_paused = !game_state.is_paused;
                 if (game_state.is_paused) { //- cabarger: Record amount of time spent paused.
                     game_state.pause_start_time = platform_api.getTime();
@@ -243,59 +243,43 @@ export fn spUpdateAndRender(
             platform_api.beginDrawing();
             platform_api.clearBackground(.{ .r = 10, .g = 10, .b = 10, .a = 255 });
 
-            //- FIXME(cabarger): I'm being lazy and passing game_state to these draw functions,
-            // just pass what is needed.
-
-            sp_render.drawBoard(
-                platform_api,
-                game_state,
-                scaledTileDim(
+            const draw_info = sp_render.DrawInfo{
+                .scaled_tile_dim = scaledTileDim(
                     tileset.tile_width,
                     tileset.tile_height,
                     game_state.scale_factor,
                 ),
-                @enumFromInt(game_state.draw_rot_state),
+                .draw_rot_state = @enumFromInt(game_state.draw_rot_state),
+                .board_translation = game_state.board_translation,
+                // .selected_tile_p = game_state.selected_tile_p,
+                .draw_3d = game_state.draw_3d,
+                .scale_factor = game_state.scale_factor,
+            };
+
+            sp_render.drawBoard(
+                &draw_info,
+                platform_api,
                 world,
                 tileset,
+                game_state.selected_tile_p,
             );
 
             if (game_state.debug_draw_grid_lines)
-                sp_render.debugDrawGridLines(
-                    platform_api,
-                    game_state,
-                    scaledTileDim(
-                        tileset.tile_width,
-                        tileset.tile_height,
-                        game_state.scale_factor,
-                    ),
-                );
+                sp_render.debugDrawGridLines(&draw_info, platform_api);
 
             if (game_state.debug_draw_tile_height)
                 sp_render.debugDrawTileHeights(
+                    &draw_info,
                     platform_api,
-                    game_state,
                     world,
-                    scaledTileDim(
-                        tileset.tile_width,
-                        tileset.tile_height,
-                        game_state.scale_factor,
-                    ),
+                    game_state.rl_font,
                 );
 
             if (game_state.debug_draw_tile_hitboxes)
-                sp_render.debugDrawTileHitboxes(
-                    platform_api,
-                    game_state,
-                    world,
-                    scaledTileDim(
-                        tileset.tile_width,
-                        tileset.tile_height,
-                        game_state.scale_factor,
-                    ),
-                );
+                sp_render.debugDrawTileHitboxes(&draw_info, platform_api, world);
 
             if (game_state.is_paused)
-                sp_render.drawPauseText(platform_api, game_state);
+                sp_render.drawPauseText(platform_api, game_state.rl_font);
 
             if (true) //- NOTE(cabarger): Allways drawing debug info right now.
                 sp_render.drawDebugInfo(
@@ -308,17 +292,14 @@ export fn spUpdateAndRender(
         },
         .title_screen => {
             //- cabarger: Title screen update
-            if (game_input.key_input.isKeyPressed(.m)) {
+            if (game_input.keyPressed(.m)) {
                 game_state.game_mode = (game_state.game_mode + 1) % @intFromEnum(GameMode.count);
             }
 
             //- cabarger: Title screen draw
             platform_api.beginDrawing();
             platform_api.clearBackground(.{ .r = 10, .g = 10, .b = 10, .a = 255 });
-            sp_render.drawTitleScreenText(
-                platform_api,
-                game_state,
-            );
+            sp_render.drawTitleScreenText(platform_api, game_state.rl_font);
             platform_api.endDrawing();
         },
         .count => unreachable,
@@ -462,7 +443,7 @@ fn selectedTilePFromMouseP(
                     @intFromFloat(scaled_tile_dim[1]),
                     game_state.board_translation,
                 );
-                projected_p.y -= @as(f32, @floatFromInt(height)) * (scaledTileDim(tileset.tile_width, tileset.tile_height, game_state.scale_factor)[1] / 2.0);
+                projected_p.y -= @as(f32, @floatFromInt(height)) * (scaled_tile_dim[1] / 2.0);
                 if (platform_api.checkCollisionPointRec(@bitCast(game_input.mouse_input.p), .{
                     .x = projected_p.x,
                     .y = projected_p.y,
