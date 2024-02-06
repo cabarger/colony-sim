@@ -137,149 +137,45 @@ pub fn drawTile(
     platform_api.drawTexturePro(tileset.texture, source_rect, dest_rect, .{ .x = 0, .y = 0 }, 0, tint);
 }
 
-/// NOTE(Caleb): WTF chill with the params.
-pub fn drawTileFromCoords(
-    platform_api: *const sp_platform.PlatformAPI,
-    tile_id: u8,
-    height_map: []const i16,
-    tileset: *const Tileset,
-    source_row_index: usize,
-    source_col_index: usize,
-    dest_row_index: usize,
-    dest_col_index: usize,
-    scaled_tile_dim: rl.Vector2,
-    board_translation: @Vector(2, f32),
-    selected_tile_p: @Vector(2, i8),
-    draw_3d: bool,
-    scale_factor: f32,
-) void {
-    var dest_pos = isoProj(
-        platform_api,
-        .{
-            .x = @as(f32, @floatFromInt(dest_col_index)) * scaled_tile_dim.x,
-            .y = @as(f32, @floatFromInt(dest_row_index)) * scaled_tile_dim.y,
-        },
-        @intFromFloat(scaled_tile_dim.x),
-        @intFromFloat(scaled_tile_dim.y),
-        board_translation,
-    );
-
-    // Shift selected tile up
-    if (selected_tile_p[0] == @as(i32, @intCast(dest_col_index)) and
-        selected_tile_p[1] == @as(i32, @intCast(dest_row_index)))
-        dest_pos.y -= (scaled_tile_dim.y / 2.0) * 0.25;
-
-    if (draw_3d) {
-        for (0..@intCast(height_map[source_row_index * board_dim + source_col_index] + 1)) |_| {
-            drawTile(platform_api, tileset, tile_id, dest_pos, scale_factor, rl.WHITE);
-            dest_pos.y -= scaled_tile_dim.y / 2.0;
-        }
-    } else {
-        drawTile(platform_api, tileset, tile_id, dest_pos, scale_factor, rl.WHITE);
-    }
-
-    // NOTE(caleb): I will  want to draw resoruces again soon, just keeping this code around.
-    // if (height >= 5) { // Draw tree
-    //     dest_pos.y -= scaled_tile_dim.y / 2.0;
-    //     drawTile(&tileset, tree_tile_id, dest_pos, scale_factor, rl.WHITE);
-    // }
-}
-
-pub fn drawWorldTileFromCoords(
-    platform_api: *const sp_platform.PlatformAPI,
-    world: *const World,
-    tileset: *const Tileset,
-    source_row_index: usize,
-    source_col_index: usize,
-    dest_row_index: usize,
-    dest_col_index: usize,
-    scaled_tile_dim: rl.Vector2,
-    board_translation: @Vector(2, f32),
-    selected_tile_p: @Vector(2, i8),
-    draw_3d: bool,
-    scale_factor: f32,
-) void {
-    const tile_id = world.region_data[source_row_index * board_dim + source_col_index].tiles[0];
-    drawTileFromCoords(platform_api, tile_id, &world.height_map, tileset, source_row_index, source_col_index, dest_row_index, dest_col_index, scaled_tile_dim, board_translation, selected_tile_p, draw_3d, scale_factor);
-}
-
-pub fn drawRegionTileFromCoords(
-    platform_api: *const sp_platform.PlatformAPI,
-    region_data: *const RegionData,
-    tileset: *const Tileset,
-    source_row_index: usize,
-    source_col_index: usize,
-    dest_row_index: usize,
-    dest_col_index: usize,
-    scaled_tile_dim: rl.Vector2,
-    board_translation: @Vector(2, f32),
-    selected_tile_p: @Vector(2, i8),
-    draw_3d: bool,
-    scale_factor: f32,
-) void {
-    const tile_id = region_data.tiles[source_row_index * board_dim + source_col_index];
-    drawTileFromCoords(platform_api, tile_id, &region_data.height_map, tileset, source_row_index, source_col_index, dest_row_index, dest_col_index, scaled_tile_dim, board_translation, selected_tile_p, draw_3d, scale_factor);
-}
-
 pub fn drawBoard(
     platform_api: *const sp_platform.PlatformAPI,
     game_state: *sp_platform.GameState,
     scaled_tile_dim: @Vector(2, f32),
-    view_mode: sp_map.ViewMode,
     draw_rot_state: DrawRotState,
     world: *sp_map.World,
     tileset: *const Tileset,
 ) void {
-    switch (view_mode) {
-        .world => {
-            for (0..board_dim) |dest_row_index| {
-                for (0..board_dim) |dest_col_index| {
-                    var source_tile_coords: @Vector(2, usize) = @intCast(
-                        sp_map.canonicalTileP(@intCast(@Vector(2, usize){ dest_col_index, dest_row_index }), draw_rot_state),
-                    );
-                    drawWorldTileFromCoords(
-                        platform_api,
-                        world,
-                        tileset,
-                        source_tile_coords[1],
-                        source_tile_coords[0],
-                        dest_row_index,
-                        dest_col_index,
-                        @bitCast(scaled_tile_dim),
-                        @bitCast(game_state.board_translation),
-                        game_state.selected_tile_p,
-                        game_state.draw_3d,
-                        game_state.scale_factor,
-                    );
-                }
-            }
-        },
-        .region => {
-            const region_data_index: usize = @intCast(
-                game_state.selected_region_p[1] * @as(usize, @intCast(board_dim)) + game_state.selected_region_p[0],
+    for (0..board_dim) |dest_row_index| {
+        for (0..board_dim) |dest_col_index| {
+            var source_tile_coords: @Vector(2, usize) = @intCast(
+                sp_map.canonicalTileP(@intCast(@Vector(2, usize){ dest_col_index, dest_row_index }), draw_rot_state),
             );
-            for (0..board_dim) |dest_row_index| {
-                for (0..board_dim) |dest_col_index| {
-                    var source_tile_coords: @Vector(2, usize) = @intCast(
-                        sp_map.canonicalTileP(@intCast(@Vector(2, usize){ dest_col_index, dest_row_index }), draw_rot_state),
-                    );
-                    drawRegionTileFromCoords(
-                        platform_api,
-                        &world.region_data[region_data_index],
-                        tileset,
-                        source_tile_coords[1],
-                        source_tile_coords[0],
-                        dest_row_index,
-                        dest_col_index,
-                        @bitCast(scaled_tile_dim),
-                        @bitCast(game_state.board_translation),
-                        game_state.selected_tile_p,
-                        game_state.draw_3d,
-                        game_state.scale_factor,
-                    );
+
+            var dest_pos = isoProj(
+                platform_api,
+                .{
+                    .x = @as(f32, @floatFromInt(dest_col_index)) * scaled_tile_dim[0],
+                    .y = @as(f32, @floatFromInt(dest_row_index)) * scaled_tile_dim[1],
+                },
+                @intFromFloat(scaled_tile_dim[0]),
+                @intFromFloat(scaled_tile_dim[1]),
+                game_state.board_translation,
+            );
+
+            // Shift selected tile up
+            if (game_state.selected_tile_p[0] == @as(i32, @intCast(dest_col_index)) and
+                game_state.selected_tile_p[1] == @as(i32, @intCast(dest_row_index)))
+                dest_pos.y -= (scaled_tile_dim[1] / 2.0) * 0.25;
+
+            if (game_state.draw_3d) {
+                for (0..@intCast(world.height_map[source_tile_coords[1] * board_dim + source_tile_coords[0]] + 1)) |_| {
+                    drawTile(platform_api, tileset, world.tiles[source_tile_coords[1] * board_dim + source_tile_coords[0]], dest_pos, game_state.scale_factor, rl.WHITE);
+                    dest_pos.y -= scaled_tile_dim[1] / 2.0;
                 }
+            } else {
+                drawTile(platform_api, tileset, world.tiles[source_tile_coords[1] * board_dim + source_tile_coords[0]], dest_pos, game_state.scale_factor, rl.WHITE);
             }
-        },
+        }
     }
 }
 
@@ -348,11 +244,7 @@ pub fn debugDrawTileHeights(
             const canonical_board_p: @Vector(2, usize) = @intCast(
                 sp_map.canonicalTileP(@intCast(@Vector(2, usize){ col_index, row_index }), @enumFromInt(game_state.draw_rot_state)),
             );
-            const height = switch (@as(sp_map.ViewMode, @enumFromInt(game_state.view_mode))) {
-                .region => world.region_data[game_state.selected_region_p[1] * board_dim + game_state.selected_region_p[0]]
-                    .height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]],
-                .world => world.height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]],
-            };
+            const height = world.height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]];
             var projected_p = isoProjGlyph(
                 platform_api,
                 .{
@@ -387,11 +279,7 @@ pub fn debugDrawTileHitboxes(
             const canonical_board_p: @Vector(2, usize) = @intCast(
                 sp_map.canonicalTileP(@intCast(@Vector(2, usize){ col_index, row_index }), @enumFromInt(game_state.draw_rot_state)),
             );
-            const height = switch (@as(sp_map.ViewMode, @enumFromInt(game_state.view_mode))) {
-                .region => world.region_data[game_state.selected_region_p[1] * board_dim + game_state.selected_region_p[0]]
-                    .height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]],
-                .world => world.height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]],
-            };
+            const height = world.height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]];
             var projected_p = isoProj(
                 platform_api,
                 .{

@@ -37,7 +37,6 @@ const base_thread_context = base.base_thread_context;
 const Tileset = @import("Tileset.zig");
 const Matrix2x2 = base_math.Matrix2x2;
 const World = sp_map.World;
-const RegionData = sp_map.RegionData;
 
 const ArrayList = std.ArrayList;
 const AutoHashMap = std.AutoHashMap;
@@ -212,27 +211,6 @@ export fn spUpdateAndRender(
                 game_state.debug_draw_tile_hitboxes = !game_state.debug_draw_tile_hitboxes;
             }
 
-            //- cabarger: Change to world view
-            if (game_input.key_input.isKeyPressed(.e)) {
-                game_state.view_mode = @intFromEnum(sp_map.ViewMode.world);
-            }
-
-            //- cabarger: Select a region and change the view mode to regional
-            // NOTE: We can infer that we are in region mode if selected region is valid?
-            // this way we don't have to track a world/region mode, we just know.
-            if (game_input.key_input.isKeyPressed(.enter) and
-                @as(sp_map.ViewMode, @enumFromInt(game_state.view_mode)) == .world)
-            {
-                const zero_vec: @Vector(2, i8) = @splat(0);
-                const dim_vec: @Vector(2, i8) = @splat(board_dim);
-                if (@reduce(.And, game_state.selected_tile_p >= zero_vec) and @reduce(.And, game_state.selected_tile_p < dim_vec)) {
-                    game_state.view_mode = @intFromEnum(sp_map.ViewMode.region);
-                    game_state.selected_region_p = @intCast(
-                        sp_map.canonicalTileP(game_state.selected_tile_p, @enumFromInt(game_state.draw_rot_state)),
-                    );
-                }
-            }
-
             //- cabarger: Pause the game
             if (game_input.key_input.isKeyPressed(.space)) {
                 game_state.is_paused = !game_state.is_paused;
@@ -276,7 +254,6 @@ export fn spUpdateAndRender(
                     tileset.tile_height,
                     game_state.scale_factor,
                 ),
-                @enumFromInt(game_state.view_mode),
                 @enumFromInt(game_state.draw_rot_state),
                 world,
                 tileset,
@@ -387,13 +364,6 @@ fn gameStateInit(game_state: *sp_platform.GameState, platform_api: *const sp_pla
 
     game_state.world_offset = game_state.perm_fba.end_index;
     world = perm_ally.create(World) catch unreachable;
-    world.* = World{
-        .region_data = perm_ally.alloc(
-            RegionData,
-            board_dim * board_dim,
-        ) catch unreachable,
-        .height_map = undefined,
-    };
 
     game_state.game_mode = @intFromEnum(GameMode.play);
 
@@ -432,9 +402,7 @@ fn gameStateInit(game_state: *sp_platform.GameState, platform_api: *const sp_pla
     game_state.pause_start_time = 0.0;
     game_state.last_tick_time = 0;
 
-    game_state.view_mode = @intFromEnum(sp_map.ViewMode.world);
     game_state.selected_tile_p = @Vector(2, i8){ -1, -1 };
-    game_state.selected_region_p = @Vector(2, u8){ 0, 0 };
 
     game_state.draw_3d = true;
     game_state.scale_factor = 2.0;
@@ -483,11 +451,7 @@ fn selectedTilePFromMouseP(
                 const canonical_board_p: @Vector(2, usize) = @intCast(
                     sp_map.canonicalTileP(@intCast(@Vector(2, usize){ @intCast(col_index), @intCast(row_index) }), @enumFromInt(game_state.draw_rot_state)),
                 );
-                const height = switch (@as(sp_map.ViewMode, @enumFromInt(game_state.view_mode))) {
-                    .region => world.region_data[game_state.selected_region_p[1] * board_dim + game_state.selected_region_p[0]]
-                        .height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]],
-                    .world => world.height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]],
-                };
+                const height = world.height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]];
                 var projected_p = sp_render.isoProj(
                     platform_api,
                     .{

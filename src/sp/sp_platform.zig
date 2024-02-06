@@ -155,9 +155,7 @@ pub const GameState = struct {
     pause_start_time: f64,
     last_tick_time: f64,
 
-    view_mode: u8,
     selected_tile_p: @Vector(2, i8),
-    selected_region_p: @Vector(2, u8),
 
     draw_3d: bool,
     scale_factor: f32,
