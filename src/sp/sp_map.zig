@@ -27,11 +27,6 @@ const FixedBufferAllocator = std.heap.FixedBufferAllocator;
 pub const board_dim = 17; //33; // NOTE(caleb): Must = (power of 2) + 1
 pub const max_height = 10;
 
-pub const ViewMode = enum {
-    region,
-    world,
-};
-
 pub const TileId = enum(u8) {
     soil = 0,
     rock,
@@ -42,13 +37,8 @@ pub const TileId = enum(u8) {
     forest,
 };
 
-pub const RegionData = struct {
-    tiles: [board_dim * board_dim]u8,
-    height_map: [board_dim * board_dim]i16,
-};
-
 pub const World = struct {
-    region_data: []RegionData,
+    tiles: [board_dim * board_dim]u8,
     height_map: [board_dim * board_dim]i16,
 };
 
@@ -183,7 +173,11 @@ pub fn genWorld(
     tile_p_components: *ecs.ComponentArray(@Vector(2, u16)),
     resource_kind_components: *ecs.ComponentArray(sp_sim.ResourceKind),
 ) !void {
-    // Generate world heightmap
+    _ = resource_kind_components;
+    _ = tile_p_components;
+    _ = entity_man;
+
+    //- cabarger: Generate heightmap
     for (0..board_dim * board_dim) |board_index|
         world.height_map[board_index] = 0;
     world.height_map[0] = rng.intRangeLessThan(i8, 0, max_height); // Top Left
@@ -198,72 +192,23 @@ pub fn genWorld(
         1.0, // NOTE(caleb): Random height scalar lower = rougher terrain
     );
 
-    for (0..board_dim) |world_row_index| {
-        for (0..board_dim) |world_col_index| {
-            const world_tile_index: u16 = @intCast(world_row_index * board_dim + world_col_index);
-
-            // Regional heightmap
-            world.region_data[world_tile_index].height_map[0] = // Top Left
-                if (world_row_index > 0 and world_col_index > 0)
-                world.height_map[(world_row_index - 1) * board_dim + world_col_index - 1]
-            else
-                rng.intRangeLessThan(i8, 0, max_height);
-            world.region_data[world_tile_index].height_map[board_dim - 1] = // Top right
-                if (world_row_index > 0 and world_col_index < board_dim - 1)
-                world.height_map[(world_row_index - 1) * board_dim + world_col_index + 1]
-            else
-                rng.intRangeLessThan(i8, 0, max_height);
-            world.region_data[world_tile_index].height_map[(board_dim - 1) * board_dim + (board_dim - 1)] = // Bottom right
-                if (world_row_index < board_dim - 1 and world_col_index < board_dim - 1)
-                world.height_map[(world_row_index + 1) * board_dim + world_col_index + 1]
-            else
-                rng.intRangeLessThan(i8, 0, max_height);
-            world.region_data[world_tile_index].height_map[(board_dim - 1) * board_dim] = // Bottom left
-                if (world_row_index < board_dim - 1 and world_col_index > 0)
-                world.height_map[(world_row_index + 1) * board_dim + world_col_index - 1]
-            else
-                rng.intRangeLessThan(i8, 0, max_height);
-            genHeightMap(
-                &world.region_data[world_tile_index].height_map,
-                @splat(@divTrunc(board_dim, 2)),
-                board_dim,
-                rng,
-                1.0, // NOTE(caleb): Random height scalar lower = rougher terrain
-            );
-
-            for (0..board_dim) |region_row_index| {
-                for (0..board_dim) |region_col_index| {
-                    const region_tile_index: u16 = @intCast(region_row_index * board_dim + region_col_index);
-                    const height = world.region_data[world_tile_index].height_map[region_tile_index];
-                    var tile_id: u16 = undefined;
-                    if (height <= 0) {
-                        tile_id = tileset.tile_type_to_id.get(.water).?;
-                    } else if (height == 1) {
-                        tile_id = tileset.tile_type_to_id.get(.sand).?;
-                    } else if (height > 1 and height < 4) {
-                        tile_id = tileset.tile_type_to_id.get(.forest).?;
-                    } else if (height > 3 and height < 7) {
-                        tile_id = tileset.tile_type_to_id.get(.plains).?;
-                    } else {
-                        tile_id = tileset.tile_type_to_id.get(.rock).?;
-                    }
-                    world.region_data[world_tile_index].tiles[region_tile_index] = @intCast(tile_id);
-
-                    // 1 in 10000 to gen a tree // FIXME(caleb): THIS IS A HACK AND SHOULD BE REPLACED!!
-                    if (height >= 5 and rng.uintLessThan(u16, 10000) == 0) {
-                        const tree_entity_id = entity_man.newEntity();
-                        entity_man.signatures[tree_entity_id] = entity_man.entitySignature(.resource);
-                        tile_p_components.add(tree_entity_id, @Vector(2, u16){ @intCast(world_tile_index), region_tile_index });
-                        resource_kind_components.add(tree_entity_id, .tree);
-                    }
-                    // else if (rl.GetRandomValue(0, 10) == 0) { // 1 in 200 for a pile
-                    //     const pile_entity_id = entity_man.newEntity();
-                    //     inventory_components.add(pile_entity_id, .{});
-                    //     tile_p_components.add(pile_entity_id, @Vector(2, u16){ @intCast(world_tile_index), sub_region_tile_index });
-                    //     entity_man.signatures[pile_entity_id] = pile_entity_sig;
-                    // }
-                }
+    //- cabarger: Assign tile id's based on height
+    for (0..board_dim) |row_index| {
+        for (0..board_dim) |col_index| {
+            const height = world.height_map[row_index * board_dim + col_index];
+            var tile_id: u16 = undefined;
+            if (height <= 0) {
+                tile_id = tileset.tile_type_to_id.get(.water).?;
+            } else if (height == 1) {
+                tile_id = tileset.tile_type_to_id.get(.sand).?;
+            } else if (height > 1 and height < 4) {
+                tile_id = tileset.tile_type_to_id.get(.forest).?;
+            } else if (height > 3 and height < 7) {
+                tile_id = tileset.tile_type_to_id.get(.plains).?;
+            } else {
+                tile_id = tileset.tile_type_to_id.get(.rock).?;
             }
+            world.tiles[row_index * board_dim + col_index] = @intCast(tile_id);
         }
     }
 }

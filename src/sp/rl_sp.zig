@@ -116,12 +116,9 @@ pub fn main() !void {
         //- cabarger: Key inputs
         game_input.last_key_input = game_input.key_input;
         game_input.key_input = mem.zeroes(sp_platform.GameInput.KeyInput);
-        var key_pressed = rl.GetKeyPressed();
-        while (key_pressed != 0) {
-            const sp_key = rlToSPKey(key_pressed);
-            if (sp_key != null)
-                game_input.key_input.setKeyPressed(sp_key.?);
-            key_pressed = rl.GetKeyPressed();
+        for (0..@intFromEnum(sp_platform.GameInput.Key.count)) |sp_key_index| {
+            if (rl.IsKeyDown(spToRLKey(@enumFromInt(sp_key_index))))
+                game_input.key_input.keys_down.set(sp_key_index);
         }
 
         if (build_options.enable_sound)
@@ -193,46 +190,28 @@ fn loadLibraryFunction(
     return result;
 }
 
-fn rlToSPKey(rl_key: c_int) ?sp_platform.GameInput.Key {
-    var result: ?sp_platform.GameInput.Key = null;
-    if (rl_key == rl.KEY_R) {
-        result = .r;
-    } else if (rl_key == rl.KEY_H) {
-        result = .h;
-    } else if (rl_key == rl.KEY_E) {
-        result = .e;
-    } else if (rl_key == rl.KEY_M) {
-        result = .m;
-    } else if (rl_key == rl.KEY_T) {
-        result = .t;
-    } else if (rl_key == rl.KEY_F1) {
-        result = .f1;
-    } else if (rl_key == rl.KEY_F2) {
-        result = .f2;
-    } else if (rl_key == rl.KEY_F3) {
-        result = .f3;
-    } else if (rl_key == rl.KEY_F4) {
-        result = .f4;
-    } else if (rl_key == rl.KEY_LEFT_SHIFT) {
-        result = .left_shift;
-    } else if (rl_key == rl.KEY_ENTER) {
-        result = .enter;
-    } else if (rl_key == rl.KEY_SPACE) {
-        result = .space;
-    } else if (rl_key == rl.KEY_KP_6) {
-        result = .kp_6;
-    } else if (rl_key == rl.KEY_KP_4) {
-        result = .kp_4;
-    } else if (rl_key == rl.KEY_UP) {
-        result = .up;
-    } else if (rl_key == rl.KEY_DOWN) {
-        result = .down;
-    } else if (rl_key == rl.KEY_RIGHT) {
-        result = .right;
-    } else if (rl_key == rl.KEY_LEFT) {
-        result = .left;
-    }
-    return result;
+inline fn spToRLKey(sp_key: sp_platform.GameInput.Key) c_int {
+    return switch (sp_key) {
+        .r => rl.KEY_R,
+        .h => rl.KEY_H,
+        .e => rl.KEY_E,
+        .m => rl.KEY_M,
+        .t => rl.KEY_T,
+        .f1 => rl.KEY_F1,
+        .f2 => rl.KEY_F2,
+        .f3 => rl.KEY_F3,
+        .f4 => rl.KEY_F4,
+        .left_shift => rl.KEY_LEFT_SHIFT,
+        .enter => rl.KEY_ENTER,
+        .space => rl.KEY_SPACE,
+        .kp_6 => rl.KEY_KP_6,
+        .kp_4 => rl.KEY_KP_4,
+        .up => rl.KEY_UP,
+        .down => rl.KEY_DOWN,
+        .left => rl.KEY_LEFT,
+        .right => rl.KEY_RIGHT,
+        .count => unreachable,
+    };
 }
 
 fn platformAPIInit() sp_platform.PlatformAPI {

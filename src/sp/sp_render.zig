@@ -43,6 +43,14 @@ pub const DrawRotState = enum(u8) {
     count,
 };
 
+pub const DrawInfo = struct {
+    scaled_tile_dim: @Vector(2, f32),
+    draw_rot_state: DrawRotState,
+    board_translation: @Vector(2, f32),
+    draw_3d: bool,
+    scale_factor: f32,
+};
+
 pub inline fn isoProjMatrix() Matrix2x2(f32) {
     return Matrix2x2(f32){
         .m0 = 0.5,
@@ -137,178 +145,74 @@ pub fn drawTile(
     platform_api.drawTexturePro(tileset.texture, source_rect, dest_rect, .{ .x = 0, .y = 0 }, 0, tint);
 }
 
-/// NOTE(Caleb): WTF chill with the params.
-pub fn drawTileFromCoords(
-    platform_api: *const sp_platform.PlatformAPI,
-    tile_id: u8,
-    height_map: []const i16,
-    tileset: *const Tileset,
-    source_row_index: usize,
-    source_col_index: usize,
-    dest_row_index: usize,
-    dest_col_index: usize,
-    scaled_tile_dim: rl.Vector2,
-    board_translation: @Vector(2, f32),
-    selected_tile_p: @Vector(2, i8),
-    draw_3d: bool,
-    scale_factor: f32,
-) void {
-    var dest_pos = isoProj(
-        platform_api,
-        .{
-            .x = @as(f32, @floatFromInt(dest_col_index)) * scaled_tile_dim.x,
-            .y = @as(f32, @floatFromInt(dest_row_index)) * scaled_tile_dim.y,
-        },
-        @intFromFloat(scaled_tile_dim.x),
-        @intFromFloat(scaled_tile_dim.y),
-        board_translation,
-    );
-
-    // Shift selected tile up
-    if (selected_tile_p[0] == @as(i32, @intCast(dest_col_index)) and
-        selected_tile_p[1] == @as(i32, @intCast(dest_row_index)))
-        dest_pos.y -= (scaled_tile_dim.y / 2.0) * 0.25;
-
-    if (draw_3d) {
-        for (0..@intCast(height_map[source_row_index * board_dim + source_col_index] + 1)) |_| {
-            drawTile(platform_api, tileset, tile_id, dest_pos, scale_factor, rl.WHITE);
-            dest_pos.y -= scaled_tile_dim.y / 2.0;
-        }
-    } else {
-        drawTile(platform_api, tileset, tile_id, dest_pos, scale_factor, rl.WHITE);
-    }
-
-    // NOTE(caleb): I will  want to draw resoruces again soon, just keeping this code around.
-    // if (height >= 5) { // Draw tree
-    //     dest_pos.y -= scaled_tile_dim.y / 2.0;
-    //     drawTile(&tileset, tree_tile_id, dest_pos, scale_factor, rl.WHITE);
-    // }
-}
-
-pub fn drawWorldTileFromCoords(
-    platform_api: *const sp_platform.PlatformAPI,
-    world: *const World,
-    tileset: *const Tileset,
-    source_row_index: usize,
-    source_col_index: usize,
-    dest_row_index: usize,
-    dest_col_index: usize,
-    scaled_tile_dim: rl.Vector2,
-    board_translation: @Vector(2, f32),
-    selected_tile_p: @Vector(2, i8),
-    draw_3d: bool,
-    scale_factor: f32,
-) void {
-    const tile_id = world.region_data[source_row_index * board_dim + source_col_index].tiles[0];
-    drawTileFromCoords(platform_api, tile_id, &world.height_map, tileset, source_row_index, source_col_index, dest_row_index, dest_col_index, scaled_tile_dim, board_translation, selected_tile_p, draw_3d, scale_factor);
-}
-
-pub fn drawRegionTileFromCoords(
-    platform_api: *const sp_platform.PlatformAPI,
-    region_data: *const RegionData,
-    tileset: *const Tileset,
-    source_row_index: usize,
-    source_col_index: usize,
-    dest_row_index: usize,
-    dest_col_index: usize,
-    scaled_tile_dim: rl.Vector2,
-    board_translation: @Vector(2, f32),
-    selected_tile_p: @Vector(2, i8),
-    draw_3d: bool,
-    scale_factor: f32,
-) void {
-    const tile_id = region_data.tiles[source_row_index * board_dim + source_col_index];
-    drawTileFromCoords(platform_api, tile_id, &region_data.height_map, tileset, source_row_index, source_col_index, dest_row_index, dest_col_index, scaled_tile_dim, board_translation, selected_tile_p, draw_3d, scale_factor);
-}
-
 pub fn drawBoard(
+    draw_info: *const DrawInfo,
     platform_api: *const sp_platform.PlatformAPI,
-    game_state: *sp_platform.GameState,
-    scaled_tile_dim: @Vector(2, f32),
-    view_mode: sp_map.ViewMode,
-    draw_rot_state: DrawRotState,
     world: *sp_map.World,
     tileset: *const Tileset,
+    selected_tile_p: @Vector(2, i8),
 ) void {
-    switch (view_mode) {
-        .world => {
-            for (0..board_dim) |dest_row_index| {
-                for (0..board_dim) |dest_col_index| {
-                    var source_tile_coords: @Vector(2, usize) = @intCast(
-                        sp_map.canonicalTileP(@intCast(@Vector(2, usize){ dest_col_index, dest_row_index }), draw_rot_state),
-                    );
-                    drawWorldTileFromCoords(
-                        platform_api,
-                        world,
-                        tileset,
-                        source_tile_coords[1],
-                        source_tile_coords[0],
-                        dest_row_index,
-                        dest_col_index,
-                        @bitCast(scaled_tile_dim),
-                        @bitCast(game_state.board_translation),
-                        game_state.selected_tile_p,
-                        game_state.draw_3d,
-                        game_state.scale_factor,
-                    );
-                }
-            }
-        },
-        .region => {
-            const region_data_index: usize = @intCast(
-                game_state.selected_region_p[1] * @as(usize, @intCast(board_dim)) + game_state.selected_region_p[0],
+    for (0..board_dim) |dest_row_index| {
+        for (0..board_dim) |dest_col_index| {
+            var source_tile_coords: @Vector(2, usize) = @intCast(
+                sp_map.canonicalTileP(
+                    @intCast(@Vector(2, usize){ dest_col_index, dest_row_index }),
+                    draw_info.draw_rot_state,
+                ),
             );
-            for (0..board_dim) |dest_row_index| {
-                for (0..board_dim) |dest_col_index| {
-                    var source_tile_coords: @Vector(2, usize) = @intCast(
-                        sp_map.canonicalTileP(@intCast(@Vector(2, usize){ dest_col_index, dest_row_index }), draw_rot_state),
-                    );
-                    drawRegionTileFromCoords(
-                        platform_api,
-                        &world.region_data[region_data_index],
-                        tileset,
-                        source_tile_coords[1],
-                        source_tile_coords[0],
-                        dest_row_index,
-                        dest_col_index,
-                        @bitCast(scaled_tile_dim),
-                        @bitCast(game_state.board_translation),
-                        game_state.selected_tile_p,
-                        game_state.draw_3d,
-                        game_state.scale_factor,
-                    );
+
+            var dest_pos = isoProj(
+                platform_api,
+                .{
+                    .x = @as(f32, @floatFromInt(dest_col_index)) * draw_info.scaled_tile_dim[0],
+                    .y = @as(f32, @floatFromInt(dest_row_index)) * draw_info.scaled_tile_dim[1],
+                },
+                @intFromFloat(draw_info.scaled_tile_dim[0]),
+                @intFromFloat(draw_info.scaled_tile_dim[1]),
+                draw_info.board_translation,
+            );
+
+            // Shift selected tile up
+            if (@reduce(.And, selected_tile_p == @Vector(2, i32){ @intCast(dest_col_index), @intCast(dest_row_index) }))
+                dest_pos.y -= (draw_info.scaled_tile_dim[1] / 2.0) * 0.25;
+
+            if (draw_info.draw_3d) {
+                for (0..@intCast(world.height_map[source_tile_coords[1] * board_dim + source_tile_coords[0]] + 1)) |_| {
+                    drawTile(platform_api, tileset, world.tiles[source_tile_coords[1] * board_dim + source_tile_coords[0]], dest_pos, draw_info.scale_factor, rl.WHITE);
+                    dest_pos.y -= draw_info.scaled_tile_dim[1] / 2.0;
                 }
+            } else {
+                drawTile(platform_api, tileset, world.tiles[source_tile_coords[1] * board_dim + source_tile_coords[0]], dest_pos, draw_info.scale_factor, rl.WHITE);
             }
-        },
+        }
     }
 }
 
 pub fn debugDrawGridLines(
+    draw_info: *const DrawInfo,
     platform_api: *const sp_platform.PlatformAPI,
-    game_state: *sp_platform.GameState,
-    scaled_tile_dim: @Vector(2, f32),
 ) void {
     // NOTE(caleb): + 1 for outer grid lines
     for (0..board_dim + 1) |grid_row| {
         const start_p = isoProj(
             platform_api,
             .{
-                .x = scaled_tile_dim[0] / 2.0,
-                .y = scaled_tile_dim[1] * @as(f32, @floatFromInt(grid_row)) - scaled_tile_dim[1] / 2.0,
+                .x = draw_info.scaled_tile_dim[0] / 2.0,
+                .y = draw_info.scaled_tile_dim[1] * @as(f32, @floatFromInt(grid_row)) - draw_info.scaled_tile_dim[1] / 2.0,
             },
-            @intFromFloat(scaled_tile_dim[0]),
-            @intFromFloat(scaled_tile_dim[1]),
-            game_state.board_translation,
+            @intFromFloat(draw_info.scaled_tile_dim[0]),
+            @intFromFloat(draw_info.scaled_tile_dim[1]),
+            draw_info.board_translation,
         );
         const end_p = isoProj(
             platform_api,
             .{
-                .x = scaled_tile_dim[0] * @as(f32, @floatFromInt(board_dim)) + scaled_tile_dim[0] / 2.0,
-                .y = scaled_tile_dim[1] * @as(f32, @floatFromInt(grid_row)) - scaled_tile_dim[1] / 2.0,
+                .x = draw_info.scaled_tile_dim[0] * @as(f32, @floatFromInt(board_dim)) + draw_info.scaled_tile_dim[0] / 2.0,
+                .y = draw_info.scaled_tile_dim[1] * @as(f32, @floatFromInt(grid_row)) - draw_info.scaled_tile_dim[1] / 2.0,
             },
-            @intFromFloat(scaled_tile_dim[0]),
-            @intFromFloat(scaled_tile_dim[1]),
-            game_state.board_translation,
+            @intFromFloat(draw_info.scaled_tile_dim[0]),
+            @intFromFloat(draw_info.scaled_tile_dim[1]),
+            draw_info.board_translation,
         );
         platform_api.drawLineEx(start_p, end_p, 1, rl.RED);
     }
@@ -316,57 +220,53 @@ pub fn debugDrawGridLines(
         const start_p = isoProj(
             platform_api,
             .{
-                .x = scaled_tile_dim[0] * @as(f32, @floatFromInt(grid_col)) + scaled_tile_dim[0] / 2.0,
-                .y = -scaled_tile_dim[1] / 2.0,
+                .x = draw_info.scaled_tile_dim[0] * @as(f32, @floatFromInt(grid_col)) + draw_info.scaled_tile_dim[0] / 2.0,
+                .y = -draw_info.scaled_tile_dim[1] / 2.0,
             },
-            @intFromFloat(scaled_tile_dim[0]),
-            @intFromFloat(scaled_tile_dim[1]),
-            game_state.board_translation,
+            @intFromFloat(draw_info.scaled_tile_dim[0]),
+            @intFromFloat(draw_info.scaled_tile_dim[1]),
+            draw_info.board_translation,
         );
         const end_p = isoProj(
             platform_api,
             .{
-                .x = scaled_tile_dim[0] * @as(f32, @floatFromInt(grid_col)) + scaled_tile_dim[0] / 2.0,
-                .y = scaled_tile_dim[1] * @as(f32, @floatFromInt(board_dim)) - scaled_tile_dim[1] / 2.0,
+                .x = draw_info.scaled_tile_dim[0] * @as(f32, @floatFromInt(grid_col)) + draw_info.scaled_tile_dim[0] / 2.0,
+                .y = draw_info.scaled_tile_dim[1] * @as(f32, @floatFromInt(board_dim)) - draw_info.scaled_tile_dim[1] / 2.0,
             },
-            @intFromFloat(scaled_tile_dim[0]),
-            @intFromFloat(scaled_tile_dim[1]),
-            game_state.board_translation,
+            @intFromFloat(draw_info.scaled_tile_dim[0]),
+            @intFromFloat(draw_info.scaled_tile_dim[1]),
+            draw_info.board_translation,
         );
         platform_api.drawLineEx(start_p, end_p, 1, rl.RED);
     }
 }
 
 pub fn debugDrawTileHeights(
+    draw_info: *const DrawInfo,
     platform_api: *const sp_platform.PlatformAPI,
-    game_state: *sp_platform.GameState,
     world: *sp_map.World,
-    scaled_tile_dim: @Vector(2, f32),
+    font: rl.Font,
 ) void {
     for (0..board_dim) |row_index| {
         for (0..board_dim) |col_index| {
             const canonical_board_p: @Vector(2, usize) = @intCast(
-                sp_map.canonicalTileP(@intCast(@Vector(2, usize){ col_index, row_index }), @enumFromInt(game_state.draw_rot_state)),
+                sp_map.canonicalTileP(@intCast(@Vector(2, usize){ col_index, row_index }), draw_info.draw_rot_state),
             );
-            const height = switch (@as(sp_map.ViewMode, @enumFromInt(game_state.view_mode))) {
-                .region => world.region_data[game_state.selected_region_p[1] * board_dim + game_state.selected_region_p[0]]
-                    .height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]],
-                .world => world.height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]],
-            };
+            const height = world.height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]];
             var projected_p = isoProjGlyph(
                 platform_api,
                 .{
-                    .x = @as(f32, @floatFromInt(col_index)) * scaled_tile_dim[0] + scaled_tile_dim[0] / 2.0 + scaled_tile_dim[0] / 3.0,
-                    .y = @as(f32, @floatFromInt(row_index)) * scaled_tile_dim[1],
+                    .x = @as(f32, @floatFromInt(col_index)) * draw_info.scaled_tile_dim[0] + draw_info.scaled_tile_dim[0] / 2.0 + draw_info.scaled_tile_dim[0] / 3.0,
+                    .y = @as(f32, @floatFromInt(row_index)) * draw_info.scaled_tile_dim[1],
                 },
-                @intFromFloat(scaled_tile_dim[0]),
-                @intFromFloat(scaled_tile_dim[1]),
-                @bitCast(game_state.board_translation),
+                @intFromFloat(draw_info.scaled_tile_dim[0]),
+                @intFromFloat(draw_info.scaled_tile_dim[1]),
+                @bitCast(draw_info.board_translation),
             );
-            if (game_state.draw_3d)
-                projected_p.y -= @as(f32, @floatFromInt(height)) * (scaled_tile_dim[1] / 2.0);
+            if (draw_info.draw_3d)
+                projected_p.y -= @as(f32, @floatFromInt(height)) * (draw_info.scaled_tile_dim[1] / 2.0);
             platform_api.drawTextCodepoint(
-                game_state.rl_font,
+                font,
                 @intCast(height + '0'),
                 projected_p,
                 glyph_size,
@@ -377,37 +277,32 @@ pub fn debugDrawTileHeights(
 }
 
 pub fn debugDrawTileHitboxes(
+    draw_info: *const DrawInfo,
     platform_api: *const sp_platform.PlatformAPI,
-    game_state: *sp_platform.GameState,
     world: *sp_map.World,
-    scaled_tile_dim: @Vector(2, f32),
 ) void {
     for (0..board_dim) |row_index| {
         for (0..board_dim) |col_index| {
             const canonical_board_p: @Vector(2, usize) = @intCast(
-                sp_map.canonicalTileP(@intCast(@Vector(2, usize){ col_index, row_index }), @enumFromInt(game_state.draw_rot_state)),
+                sp_map.canonicalTileP(@intCast(@Vector(2, usize){ col_index, row_index }), draw_info.draw_rot_state),
             );
-            const height = switch (@as(sp_map.ViewMode, @enumFromInt(game_state.view_mode))) {
-                .region => world.region_data[game_state.selected_region_p[1] * board_dim + game_state.selected_region_p[0]]
-                    .height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]],
-                .world => world.height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]],
-            };
+            const height = world.height_map[canonical_board_p[1] * board_dim + canonical_board_p[0]];
             var projected_p = isoProj(
                 platform_api,
                 .{
-                    .x = @as(f32, @floatFromInt(col_index)) * scaled_tile_dim[0],
-                    .y = @as(f32, @floatFromInt(row_index)) * scaled_tile_dim[1],
+                    .x = @as(f32, @floatFromInt(col_index)) * draw_info.scaled_tile_dim[0],
+                    .y = @as(f32, @floatFromInt(row_index)) * draw_info.scaled_tile_dim[1],
                 },
-                @intFromFloat(scaled_tile_dim[0]),
-                @intFromFloat(scaled_tile_dim[1]),
-                @bitCast(game_state.board_translation),
+                @intFromFloat(draw_info.scaled_tile_dim[0]),
+                @intFromFloat(draw_info.scaled_tile_dim[1]),
+                @bitCast(draw_info.board_translation),
             );
-            projected_p.y -= @as(f32, @floatFromInt(height)) * (scaled_tile_dim[1] / 2.0);
+            projected_p.y -= @as(f32, @floatFromInt(height)) * (draw_info.scaled_tile_dim[1] / 2.0);
             platform_api.drawRectangleLinesEx(.{
                 .x = projected_p.x,
                 .y = projected_p.y,
-                .width = scaled_tile_dim[0],
-                .height = scaled_tile_dim[1] / 2.0,
+                .width = draw_info.scaled_tile_dim[0],
+                .height = draw_info.scaled_tile_dim[1] / 2.0,
             }, 1, rl.GREEN);
         }
     }
@@ -415,10 +310,10 @@ pub fn debugDrawTileHitboxes(
 
 pub fn drawTitleScreenText(
     platform_api: *const sp_platform.PlatformAPI,
-    game_state: *sp_platform.GameState,
+    font: rl.Font,
 ) void {
     const title_screen_text_width = platform_api.measureText("TITLE SCREEN", glyph_size * 2);
-    platform_api.drawTextEx(game_state.rl_font, "TITLE SCREEN", .{
+    platform_api.drawTextEx(font, "TITLE SCREEN", .{
         .x = @floatFromInt(@divFloor(platform_api.getScreenWidth(), 2) - @divFloor(title_screen_text_width, 2)),
         .y = @floatFromInt(platform_api.getScreenHeight() - @divFloor(platform_api.getScreenHeight(), 5)),
     }, glyph_size * 2, 1.0, rl.WHITE);
@@ -426,10 +321,10 @@ pub fn drawTitleScreenText(
 
 pub fn drawPauseText(
     platform_api: *const sp_platform.PlatformAPI,
-    game_state: *sp_platform.GameState,
+    font: rl.Font,
 ) void {
     const paused_width = platform_api.measureText("PAUSED", glyph_size * 2);
-    platform_api.drawTextEx(game_state.rl_font, "PAUSED", .{
+    platform_api.drawTextEx(font, "PAUSED", .{
         .x = @floatFromInt(@divFloor(platform_api.getScreenWidth(), 2) - @divFloor(paused_width, 2)),
         .y = @floatFromInt(platform_api.getScreenHeight() - @divFloor(platform_api.getScreenHeight(), 5)),
     }, glyph_size * 2, 1.0, rl.WHITE);
@@ -467,12 +362,6 @@ pub fn drawDebugInfo(
         .{platform_api.getFPS()},
     ) catch unreachable;
 
-    const selected_region_p = fmt.allocPrintZ(
-        scratch_ally,
-        "Selected region p: ({d}, {d})",
-        .{ game_state.selected_region_p[0], game_state.selected_region_p[1] },
-    ) catch unreachable;
-
     const selected_tile_p = fmt.allocPrintZ(
         scratch_ally,
         "Selected tile p: ({d}, {d})",
@@ -484,7 +373,6 @@ pub fn drawDebugInfo(
         resource_countz,
         entity_countz,
         fpsz,
-        selected_region_p,
         selected_tile_p,
     }, 0..) |strz, strz_index| {
         platform_api.drawTextEx(game_state.rl_font, strz, .{

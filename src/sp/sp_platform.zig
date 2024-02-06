@@ -66,15 +66,11 @@ pub const GameInput = struct {
     };
 
     pub const KeyInput = struct {
-        keys_pressed: bit_set.IntegerBitSet(@intFromEnum(Key.count)) =
+        keys_down: bit_set.IntegerBitSet(@intFromEnum(Key.count)) =
             bit_set.IntegerBitSet(@intFromEnum(Key.count)).initEmpty(),
 
-        pub inline fn setKeyPressed(key_input: *KeyInput, key: Key) void {
-            key_input.keys_pressed.set(@intFromEnum(key));
-        }
-
-        pub inline fn isKeyPressed(key_input: *KeyInput, key: Key) bool {
-            return key_input.keys_pressed.isSet(@intFromEnum(key));
+        pub inline fn isKeyDown(key_input: *const KeyInput, key: Key) bool {
+            return key_input.keys_down.isSet(@intFromEnum(key));
         }
     };
 
@@ -83,6 +79,14 @@ pub const GameInput = struct {
 
     key_input: KeyInput,
     last_key_input: KeyInput,
+
+    pub inline fn keyPressed(game_input: *const GameInput, key: GameInput.Key) bool {
+        return (game_input.key_input.isKeyDown(key) and !game_input.last_key_input.isKeyDown(key));
+    }
+
+    pub inline fn keyHeld(game_input: *const GameInput, key: GameInput.Key) bool {
+        return (game_input.key_input.isKeyDown(key) and game_input.last_key_input.isKeyDown(key));
+    }
 
     // time: f64,
 };
@@ -155,9 +159,7 @@ pub const GameState = struct {
     pause_start_time: f64,
     last_tick_time: f64,
 
-    view_mode: u8,
     selected_tile_p: @Vector(2, i8),
-    selected_region_p: @Vector(2, u8),
 
     draw_3d: bool,
     scale_factor: f32,
