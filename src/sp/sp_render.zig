@@ -25,7 +25,7 @@ const rl = third_party.rl;
 const fmt = std.fmt;
 
 const Tileset = @import("Tileset.zig");
-const Matrix2x2 = base_math.Matrix2x2;
+const Mat3x3 = base_math.Mat3x3;
 const World = sp_map.World;
 const RegionData = sp_map.RegionData;
 const Random = rand.Random;
@@ -51,13 +51,24 @@ pub const DrawInfo = struct {
     scale_factor: f32,
 };
 
-pub inline fn isoProjMatrix() Matrix2x2(f32) {
-    return Matrix2x2(f32){
-        .m0 = 0.5,
-        .m1 = 0.25,
-        .m2 = -0.5,
-        .m3 = 0.25,
-    };
+pub inline fn isoProjMatrix(
+    platform_api: *const sp_platform.PlatformAPI,
+    tile_width_px: u16,
+    tile_height_px: u16,
+) Mat3x3(f32) {
+    var offset_p = boardOffset(platform_api, tile_width_px, tile_height_px);
+
+    var result: Mat3x3(f32) = undefined;
+    result.m[0] = 0.5;
+    result.m[1] = 0.25;
+    result.m[2] = 0.0;
+    result.m[3] = -0.5;
+    result.m[4] = 0.25;
+    result.m[5] = 0.0;
+    result.m[6] = offset_x;
+    result.m[7] = offset_y;
+    result.m[8] = 1.0;
+    return result;
 }
 
 pub const iso_proj_matrix = isoProjMatrix();
@@ -160,7 +171,6 @@ pub fn drawBoard(
                     draw_info.draw_rot_state,
                 ),
             );
-
             var dest_pos = isoProj(
                 platform_api,
                 .{

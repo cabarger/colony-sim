@@ -21,14 +21,11 @@ pub inline fn vector2DistanceU16(v1: @Vector(2, u16), v2: @Vector(2, u16)) f32 {
     return result;
 }
 
-pub fn Matrix2x2(comptime T: type) type {
+pub fn Mat3x3(comptime T: type) type {
     return struct {
         const Self = @This();
 
-        m0: T,
-        m1: T,
-        m2: T,
-        m3: T,
+        m: [9]T,
 
         pub fn inverse(m: Self) Self {
             comptime if (!meta.trait.isSignedInt(T) and !meta.trait.isFloat(T)) {
@@ -37,29 +34,31 @@ pub fn Matrix2x2(comptime T: type) type {
             const is_float: bool = comptime meta.trait.isFloat(T);
 
             var determinant: f32 = if (is_float)
-                1.0 / (m.m0 * m.m3 - m.m1 * m.m2)
+                1.0 / (m.m[0] * m.m[3] - m.m[1] * m.m[2])
             else
-                1.0 / @as(f32, @floatFromInt(m.m0 * m.m3 - m.m1 * m.m2));
+                1.0 / @as(f32, @floatFromInt(m.m[0] * m.m[3] - m.m[1] * m.m[2]));
 
             //- cabarger: Adjugate * determinant
             if (is_float) {
                 return Self{
-                    .m0 = m.m3 * determinant,
-                    .m1 = -m.m1 * determinant,
-                    .m2 = -m.m2 * determinant,
-                    .m3 = m.m0 * determinant,
+                    .m[0] = m.m[3] * determinant,
+                    .m[1] = -m.m[1] * determinant,
+                    .m[2] = -m.m[2] * determinant,
+                    .m[3] = m.m[0] * determinant,
                 };
             }
             return Self{
-                .m0 = @intFromFloat(m.m3 * determinant),
-                .m1 = @intFromFloat(-m.m1 * determinant),
-                .m2 = @intFromFloat(-m.m2 * determinant),
-                .m3 = @intFromFloat(m.m0 * determinant),
+                .m[0] = @intFromFloat(m.m[3] * determinant),
+                .m[1] = @intFromFloat(-m.m[1] * determinant),
+                .m[2] = @intFromFloat(-m.m[2] * determinant),
+                .m[3] = @intFromFloat(m.m[0] * determinant),
             };
+
+            
         }
 
         pub fn vectorMultiply(m: Self, v: @Vector(2, T)) @Vector(2, T) {
-            return @Vector(2, T){ m.m0 * v[0] + m.m2 * v[1], m.m1 * v[0] + m.m3 * v[1] };
+            return @Vector(2, T){ m.m[0] * v[0] + m.m[2] * v[1], m.m[1] * v[0] + m.m[3] * v[1] };
         }
     };
 }

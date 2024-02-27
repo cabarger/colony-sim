@@ -28,7 +28,7 @@ tile_count: u16,
 tile_width: u16,
 tile_height: u16,
 
-tile_id_to_type: AutoHashMap(u16, TileId), //- cabarger: FIXME naming???
+tile_id_to_type: AutoHashMap(u16, TileId),
 tile_type_to_id: AutoHashMap(TileId, u16),
 
 texture: rl.Texture,
@@ -103,7 +103,6 @@ pub fn init(
             std.debug.print("Unhandled tile type: {s}\n", .{tile_type_str});
             unreachable;
         }
-
         ts.tile_id_to_type.putAssumeCapacity(tile_id, tile_type);
         ts.tile_type_to_id.putAssumeCapacity(tile_type, tile_id);
     }

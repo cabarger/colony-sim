@@ -264,6 +264,25 @@ export fn spUpdateAndRender(
                 game_state.selected_tile_p,
             );
 
+            var dest_pos = sp_render.isoProj(
+                platform_api,
+                .{
+                    .x = @as(f32, @floatFromInt(5)) * draw_info.scaled_tile_dim[0],
+                    .y = @as(f32, @floatFromInt(5)) * draw_info.scaled_tile_dim[1],
+                },
+                @intFromFloat(draw_info.scaled_tile_dim[0]),
+                @intFromFloat(draw_info.scaled_tile_dim[1]),
+                draw_info.board_translation,
+            );
+            sp_render.drawTile(
+                platform_api,
+                tileset,
+                tileset.tile_type_to_id.get(.tree).?,
+                dest_pos,
+                draw_info.scale_factor,
+                rl.WHITE,
+            );
+
             if (game_state.debug_draw_grid_lines)
                 sp_render.debugDrawGridLines(&draw_info, platform_api);
 

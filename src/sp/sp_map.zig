@@ -30,8 +30,8 @@ pub const max_height = 10;
 pub const TileId = enum(u8) {
     soil = 0,
     rock,
-    water,
     sand,
+    water,
     tree,
     plains,
     forest,
