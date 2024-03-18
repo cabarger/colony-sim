@@ -28,33 +28,30 @@ pub fn Mat3x3(comptime T: type) type {
         m: [9]T,
 
         pub fn inverse(m: Self) Self {
-            comptime if (!meta.trait.isSignedInt(T) and !meta.trait.isFloat(T)) {
+            const is_float = comptime meta.trait.isFloat(T);
+            comptime if (!meta.trait.isSignedInt(T) and !is_float) {
                 @compileError("Wrong type");
             };
-            const is_float: bool = comptime meta.trait.isFloat(T);
-
-            var determinant: f32 = if (is_float)
+            var result: Self = undefined;
+            const determinant: f32 = if (is_float)
                 1.0 / (m.m[0] * m.m[3] - m.m[1] * m.m[2])
             else
                 1.0 / @as(f32, @floatFromInt(m.m[0] * m.m[3] - m.m[1] * m.m[2]));
 
             //- cabarger: Adjugate * determinant
             if (is_float) {
-                return Self{
-                    .m[0] = m.m[3] * determinant,
-                    .m[1] = -m.m[1] * determinant,
-                    .m[2] = -m.m[2] * determinant,
-                    .m[3] = m.m[0] * determinant,
-                };
+                result.m[0] = m.m[3] * determinant;
+                result.m[1] = -m.m[1] * determinant;
+                result.m[2] = -m.m[2] * determinant;
+                result.m[3] = m.m[0] * determinant;
+            } else {
+                result.m[0] = @intFromFloat(m.m[3] * determinant);
+                result.m[1] = @intFromFloat(-m.m[1] * determinant);
+                result.m[2] = @intFromFloat(-m.m[2] * determinant);
+                result.m[3] = @intFromFloat(m.m[0] * determinant);
             }
-            return Self{
-                .m[0] = @intFromFloat(m.m[3] * determinant),
-                .m[1] = @intFromFloat(-m.m[1] * determinant),
-                .m[2] = @intFromFloat(-m.m[2] * determinant),
-                .m[3] = @intFromFloat(m.m[0] * determinant),
-            };
 
-            
+            return result;
         }
 
         pub fn vectorMultiply(m: Self, v: @Vector(2, T)) @Vector(2, T) {

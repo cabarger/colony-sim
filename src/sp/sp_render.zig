@@ -51,30 +51,28 @@ pub const DrawInfo = struct {
     scale_factor: f32,
 };
 
-pub inline fn isoProjMatrix(
+pub fn isoProjMatrix(
     platform_api: *const sp_platform.PlatformAPI,
     tile_width_px: u16,
     tile_height_px: u16,
 ) Mat3x3(f32) {
     var offset_p = boardOffset(platform_api, tile_width_px, tile_height_px);
-
-    var result: Mat3x3(f32) = undefined;
-    result.m[0] = 0.5;
-    result.m[1] = 0.25;
-    result.m[2] = 0.0;
-    result.m[3] = -0.5;
-    result.m[4] = 0.25;
-    result.m[5] = 0.0;
-    result.m[6] = offset_x;
-    result.m[7] = offset_y;
-    result.m[8] = 1.0;
+    var result = Mat3x3(f32){
+        .m = .{
+            0.5,  -0.5, offset_p[0],
+            0.25, 0.25, offset_p[1],
+            0.0,  0.0,  1.0,
+        },
+    };
     return result;
 }
 
-pub const iso_proj_matrix = isoProjMatrix();
-
-pub fn screenSpaceBoardHeight(tile_width_px: u16, tile_height_px: u16) f32 {
-    return isoProjMatrix().vectorMultiply(.{
+pub fn screenSpaceBoardHeight(
+    platform_api: *const sp_platform.PlatformAPI,
+    tile_width_px: u16,
+    tile_height_px: u16,
+) f32 {
+    return isoProjMatrix(platform_api, tile_width_px, tile_height_px).vectorMultiply(.{
         board_dim * @as(f32, @floatFromInt(tile_width_px)),
         board_dim * @as(f32, @floatFromInt(tile_height_px)),
     })[1] + @as(f32, @floatFromInt(tile_height_px)) / 2.0;
@@ -87,7 +85,7 @@ pub fn boardOffset(
 ) @Vector(2, f32) {
     return .{
         @as(f32, @floatFromInt(platform_api.getScreenWidth())) / 2.0 - @as(f32, @floatFromInt(tile_width_px)) / 2.0,
-        (@as(f32, @floatFromInt(platform_api.getScreenHeight())) - screenSpaceBoardHeight(tile_width_px, tile_height_px)) / 2.0,
+        (@as(f32, @floatFromInt(platform_api.getScreenHeight())) - screenSpaceBoardHeight(platform_api, tile_width_px, tile_height_px)) / 2.0,
     };
 }
 
@@ -100,7 +98,7 @@ pub fn isoInvert(
 ) rl.Vector2 {
     const untranslated_p = p - board_translation;
     const unshifted_p = untranslated_p - boardOffset(platform_api, tile_width_px, tile_height_px);
-    return @bitCast(iso_proj_matrix.inverse().vectorMultiply(unshifted_p));
+    return @bitCast(isoProjMatrix(platform_api, tile_width_px, tile_height_px).inverse().vectorMultiply(unshifted_p));
 }
 
 pub fn isoProj(
@@ -110,7 +108,7 @@ pub fn isoProj(
     tile_height_px: u16,
     board_translation: @Vector(2, f32),
 ) rl.Vector2 {
-    const projected_p = isoProjMatrix().vectorMultiply(@bitCast(p));
+    const projected_p = isoProjMatrix(platform_api, tile_width_px, tile_height_px).vectorMultiply(@bitCast(p));
     const shifted_p = projected_p + boardOffset(platform_api, tile_width_px, tile_height_px);
     const translated_p = shifted_p + board_translation;
     return @bitCast(translated_p);

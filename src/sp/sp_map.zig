@@ -97,23 +97,34 @@ pub fn swpUpdateMap(
 // NOTE(caleb): This by itself isn't enough for a 90 board rotation
 // I subtract board_dim - 1 to the y component prior to the multiply.
 // The de-rotation adds board_dim - 1 after the multiply.
-pub const rotate_once_matrix = base_math.Matrix2x2(i8){
-    .m0 = 0,
-    .m1 = 1,
-    .m2 = -1,
-    .m3 = 0,
+pub const rotate_once_matrix = base_math.Mat3x3(i8){
+    .m = .{
+        0, -1, 0,
+        1, 0,  0,
+        0, 0,  1,
+    },
 };
-const derotate_once_matrix = base_math.Matrix2x2(i8).inverse(rotate_once_matrix);
 
-// NOTE(caleb): If I wanted to save time I could also precompute rotation matrices:
+pub const derotate_once_matrix = base_math.Mat3x3(i8){
+    .m = .{
+        0,  1, 0,
+        -1, 0, 0,
+        0,  0, 1,
+    },
+};
+
+//- NOTE(caleb): If I wanted to save time I could also precompute rotation matrices:
 // (and their inverses) twice and thrice.
 
 /// Depending on the rotation of the board, selected_tile_p won't reflect the
 /// correct tile in memory this function gives the de-rotated tile_p.
-pub inline fn canonicalTileP(tile_p: @Vector(2, i8), draw_rot_state: sp_render.DrawRotState) @Vector(2, i8) {
+pub inline fn canonicalTileP(
+    tile_p: @Vector(2, i8),
+    draw_rot_state: sp_render.DrawRotState,
+) @Vector(2, i8) {
     var result = tile_p;
     for (0..@intFromEnum(draw_rot_state)) |_| {
-        result = base_math.Matrix2x2(i8).vectorMultiply(derotate_once_matrix, result) +
+        result = derotate_once_matrix.vectorMultiply(result) +
             @Vector(2, i8){ 0, @intCast(board_dim - 1) };
     }
     return result;

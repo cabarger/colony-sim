@@ -3,7 +3,7 @@ const rl = @import("raylib/src/build.zig");
 
 pub fn build(b: *std.Build) void {
     ////////////////////////////////
-    //- cabarger: Build options
+    //~ cabarger: Build options
     const build_options = b.addOptions();
     build_options.addOption(bool, "enable_sound", b.option(bool, "enable-sound", "Enable sound") orelse false);
     var build_game_code = b.option(bool, "game-code", "Compile game code.") orelse false;
@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     ////////////////////////////////
-    //- cabarger: Modules
+    //~ cabarger: Modules
     const third_party_module = b.createModule(.{
         .source_file = .{ .path = "src/third_party/third_party.zig" },
     });
@@ -29,7 +29,7 @@ pub fn build(b: *std.Build) void {
     });
 
     ////////////////////////////////
-    //- cabarger: Game
+    //~ cabarger: Game
     if (build_game_code) {
         const game_code = b.addSharedLibrary(.{
             .name = "game-code", // NOTE(caleb): Explain the tmp prefix so future me knows why I did things this way.
@@ -46,7 +46,7 @@ pub fn build(b: *std.Build) void {
     }
 
     ////////////////////////////////
-    //- cabarger: Platform
+    //~ cabarger: Platform
     if (build_platform_code) {
         const platform_code = b.addExecutable(.{
             .name = "small-planet",
